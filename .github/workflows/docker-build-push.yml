@@ -1,0 +1,121 @@
+name: Build & Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (semver, e.g. 1.2.3). Leave blank to use package.json version.'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from package.json
+        id: package-version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          FINAL_VERSION="${{ inputs.version || '' }}"
+          if [ -z "$FINAL_VERSION" ]; then
+            FINAL_VERSION="$PKG_VERSION"
+          fi
+          echo "VERSION=$FINAL_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Test
+        run: yarn test
+
+      - name: Build
+        run: yarn build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.package-version.outputs.VERSION }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ github.event.repository.name }}-docker
+          cache-to: type=gha,mode=max,scope=${{ github.event.repository.name }}-docker
+
+      - name: Collect merged PR descriptions for release notes
+        id: pr-notes
+        if: github.event_name == 'push'
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            NOTES=$(git log "$LAST_TAG"..HEAD --merges --oneline 2>/dev/null || echo "No merge commits.")
+          else
+            NOTES=$(git log --merges --oneline -20 2>/dev/null || echo "Initial release.")
+          fi
+          echo "NOTES<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.package-version.outputs.VERSION }}
+          release_name: v${{ steps.package-version.outputs.VERSION }}
+          body: |
+            ## Docker Image
+            ```
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.package-version.outputs.VERSION }}
+            ```
+
+            ## Changes
+            ${{ steps.pr-notes.outputs.NOTES }}
+          draft: false
+          prerelease: false

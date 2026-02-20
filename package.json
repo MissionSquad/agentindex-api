@@ -1,0 +1,43 @@
+{
+  "name": "@missionsquad/agentindex-api",
+  "version": "1.0.0",
+  "description": "AgentIndex blockchain scanner API",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "private": true,
+  "scripts": {
+    "start": "node lib/index.js",
+    "build": "tsc",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "scrape:uris": "ts-node-dev --transpile-only scripts/scrape-agent-uris.ts",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "yarn lint && yarn test && yarn build"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@helia/verified-fetch": "^7.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "evmdecoder": "^0.0.69",
+    "express": "^4.21.2",
+    "mongodb": "^6.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "@types/supertest": "^6.0.3",
+    "@types/ws": "^8.5.14",
+    "@vitest/coverage-v8": "^3.0.5",
+    "supertest": "^7.2.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

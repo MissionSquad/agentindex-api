@@ -129,6 +129,7 @@ const CALL_TO_PRIMARY_EVENT: Record<string, string> = {
   revokeFeedback: 'FeedbackRevoked',
   appendResponse: 'ResponseAppended',
   register: 'Registered',
+  setMetadata: 'MetadataSet',
 }
 
 /**
@@ -143,6 +144,18 @@ function buildArgsFromCall(
   topics: string[],
   data: string,
 ): Record<string, unknown> | null {
+  // MetadataSet can be emitted by setMetadata or register calls.
+  // agentId is always in topics[1]. metadataKey and metadataValue are
+  // ABI-encoded in the data field as (string, bytes).
+  if (eventName === 'MetadataSet') {
+    const { metadataKey, metadataValue } = decodeAbiStringBytes(data)
+    return {
+      agentId: topicToNumber(topics[1]),
+      metadataKey,
+      metadataValue,
+    }
+  }
+
   if (CALL_TO_PRIMARY_EVENT[callName] !== eventName) return null
 
   switch (eventName) {
@@ -200,6 +213,33 @@ function extractFirstWord(data: string): number {
 function topicToNumber(topic: string | undefined): number {
   if (!topic) return 0
   return Number(BigInt(topic))
+}
+
+/**
+ * Decode ABI-encoded (string, bytes) from an event data field.
+ * Pure hex parsing — no WASM dependency.
+ */
+function decodeAbiStringBytes(data: string): { metadataKey: string; metadataValue: string } {
+  if (!data || data === '0x' || data.length <= 2) {
+    return { metadataKey: '', metadataValue: '' }
+  }
+  const hex = data.startsWith('0x') ? data.slice(2) : data
+  const readUint = (byteOffset: number): number =>
+    parseInt(hex.slice(byteOffset * 2, byteOffset * 2 + 64), 16)
+
+  try {
+    const stringOffset = readUint(0)
+    const bytesOffset = readUint(32)
+    const stringLen = readUint(stringOffset)
+    const stringHex = hex.slice((stringOffset + 32) * 2, (stringOffset + 32) * 2 + stringLen * 2)
+    const metadataKey = Buffer.from(stringHex, 'hex').toString('utf-8')
+    const bytesLen = readUint(bytesOffset)
+    const bytesHex = hex.slice((bytesOffset + 32) * 2, (bytesOffset + 32) * 2 + bytesLen * 2)
+    const metadataValue = '0x' + bytesHex
+    return { metadataKey, metadataValue }
+  } catch {
+    return { metadataKey: '', metadataValue: '' }
+  }
 }
 
 /**

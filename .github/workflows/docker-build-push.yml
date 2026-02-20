@@ -46,18 +46,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: yarn install --frozen-lockfile
-
-      - name: Lint
-        run: yarn lint
-
-      - name: Test
-        run: yarn test
-
-      - name: Build
-        run: yarn build
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

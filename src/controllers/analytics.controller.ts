@@ -19,7 +19,12 @@ export function createAnalyticsRouter(): Router {
         getEventFactClient(),
       ])
 
-      const [registrations, feedbackVolume, responseVolume, revocationVolume, transferVolume, topAgentsByFeedback, activityEvents] = await Promise.all([
+      const [
+        registrations, feedbackVolume, responseVolume, revocationVolume, transferVolume,
+        topAgentsByFeedback, activityEvents,
+        activeAgents, clientGrowth, responderGrowth,
+        tagHeatmapRaw, timeToFirstFeedbackRaw,
+      ] = await Promise.all([
         buildDailySeries(eventDb, { chainId, eventName: 'Registered' }),
         buildDailySeries(eventDb, { chainId, eventName: 'NewFeedback' }),
         buildDailySeries(eventDb, { chainId, eventName: 'ResponseAppended' }),
@@ -36,6 +41,21 @@ export function createAnalyticsRouter(): Router {
           { $limit: 10 },
         ]),
         eventDb.find({ chainId }, { blockNumber: -1, logIndex: -1 }, 25),
+        // Daily unique agents receiving feedback
+        buildDailyDistinctSeries(eventDb, { chainId, eventName: 'NewFeedback' }, '$eventArgs.agentId'),
+        // Daily unique client addresses
+        buildDailyDistinctSeries(eventDb, { chainId, eventName: 'NewFeedback' }, '$eventArgs.clientAddress'),
+        // Daily unique responders
+        buildDailyDistinctSeries(eventDb, { chainId, eventName: 'ResponseAppended' }, '$eventArgs.responder'),
+        // Tag heatmap: cross-tab tag1 × tag2
+        eventDb.aggregate<{ _id: { x: string; y: string }; value: number }>([
+          { $match: { chainId, eventName: 'NewFeedback', 'eventArgs.tag1': { $exists: true, $ne: '' }, 'eventArgs.tag2': { $exists: true, $ne: '' } } },
+          { $group: { _id: { x: '$eventArgs.tag1', y: '$eventArgs.tag2' }, value: { $sum: 1 } } },
+          { $sort: { value: -1 } },
+          { $limit: 100 },
+        ]),
+        // Time to first feedback: per-agent first registration ts + first feedback ts
+        buildTimeToFirstFeedback(eventDb, chainId),
       ])
 
       // Enrich top agents with URI, reputation score, and client diversity
@@ -161,16 +181,20 @@ export function createAnalyticsRouter(): Router {
           feedbackVolume,
           responseVolume,
           revocationVolume,
-          activeAgents: [],
-          clientGrowth: [],
-          responderGrowth: [],
+          activeAgents,
+          clientGrowth,
+          responderGrowth,
           transferVolume,
           integrityHealth: [],
           topAgentsByFeedback: enrichedTopAgents,
-          tagHeatmap: [],
+          tagHeatmap: tagHeatmapRaw.map((row) => ({
+            x: String(row._id.x),
+            y: String(row._id.y),
+            value: row.value,
+          })),
           endpointHeatmap: [],
           protocolDistribution: [],
-          timeToFirstFeedbackDistribution: [],
+          timeToFirstFeedbackDistribution: timeToFirstFeedbackRaw,
           selectedAgentFeedbackVelocity: [],
         },
         activityFeed: activityEvents.map((evt) => {
@@ -259,6 +283,123 @@ async function buildDailySeries(
     value: row.value,
     label: row._id,
   }))
+}
+
+/**
+ * Build a daily time-series counting distinct values of `distinctField` per day.
+ */
+async function buildDailyDistinctSeries(
+  eventDb: Awaited<ReturnType<typeof getEventFactClient>>,
+  match: Document,
+  distinctField: string,
+): Promise<Array<{ timestamp: number; value: number; label: string }>> {
+  const rows = await eventDb.aggregate<{ _id: string; value: number; minTs: number }>([
+    { $match: match },
+    {
+      $project: {
+        timestampMs: {
+          $cond: [
+            { $lt: ['$timestamp', 1_000_000_000_000] },
+            { $multiply: ['$timestamp', 1000] },
+            '$timestamp',
+          ],
+        },
+        distinctVal: distinctField,
+      },
+    },
+    {
+      $group: {
+        _id: {
+          day: { $dateToString: { format: '%Y-%m-%d', date: { $toDate: '$timestampMs' } } },
+          val: '$distinctVal',
+        },
+        minTs: { $min: '$timestampMs' },
+      },
+    },
+    {
+      $group: {
+        _id: '$_id.day',
+        value: { $sum: 1 },
+        minTs: { $min: '$minTs' },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ])
+
+  return rows.map((row) => ({
+    timestamp: row.minTs,
+    value: row.value,
+    label: row._id,
+  }))
+}
+
+/**
+ * Compute time-to-first-feedback distribution buckets.
+ * Compares each agent's registration timestamp to their first feedback timestamp.
+ */
+async function buildTimeToFirstFeedback(
+  eventDb: Awaited<ReturnType<typeof getEventFactClient>>,
+  chainId: number,
+): Promise<Array<{ label: string; value: number }>> {
+  // Get first registration timestamp per agent
+  const regRows = await eventDb.aggregate<{ _id: unknown; ts: number }>([
+    { $match: { chainId, eventName: 'Registered' } },
+    { $group: { _id: '$eventArgs.agentId', ts: { $min: '$timestamp' } } },
+  ])
+
+  // Get first feedback timestamp per agent
+  const fbRows = await eventDb.aggregate<{ _id: unknown; ts: number }>([
+    { $match: { chainId, eventName: 'NewFeedback' } },
+    { $group: { _id: '$eventArgs.agentId', ts: { $min: '$timestamp' } } },
+  ])
+
+  const fbMap = new Map<string, number>()
+  for (const row of fbRows) {
+    fbMap.set(String(row._id), row.ts)
+  }
+
+  const HOUR = 3_600_000
+  const DAY = 86_400_000
+
+  const buckets: Record<string, number> = {
+    '< 1 hour': 0,
+    '1-24 hours': 0,
+    '1-7 days': 0,
+    '7-30 days': 0,
+    '30+ days': 0,
+    'No feedback': 0,
+  }
+
+  for (const reg of regRows) {
+    const agentId = String(reg._id)
+    const fbTs = fbMap.get(agentId)
+
+    if (fbTs === undefined) {
+      buckets['No feedback']++
+      continue
+    }
+
+    // Normalize both to ms
+    const regMs = reg.ts < 1_000_000_000_000 ? reg.ts * 1000 : reg.ts
+    const fbMs = fbTs < 1_000_000_000_000 ? fbTs * 1000 : fbTs
+    const delta = fbMs - regMs
+
+    if (delta < HOUR) {
+      buckets['< 1 hour']++
+    } else if (delta < DAY) {
+      buckets['1-24 hours']++
+    } else if (delta < 7 * DAY) {
+      buckets['1-7 days']++
+    } else if (delta < 30 * DAY) {
+      buckets['7-30 days']++
+    } else {
+      buckets['30+ days']++
+    }
+  }
+
+  return Object.entries(buckets)
+    .filter(([, v]) => v > 0)
+    .map(([label, value]) => ({ label, value }))
 }
 
 function buildEventSummary(eventName: string, eventArgs: Record<string, unknown>): string {

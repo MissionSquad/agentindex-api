@@ -2,8 +2,11 @@ import dotenv from 'dotenv'
 
 dotenv.config()
 
+const port = parseInt(process.env.PORT || '3100', 10)
+const x402Port = parseInt(process.env.X402_PORT || String(port + 1), 10)
+
 export const env = {
-  PORT: parseInt(process.env.PORT || '3100', 10),
+  PORT: port,
 
   // MongoDB
   MONGO_USER: process.env.MONGO_USER || 'root',
@@ -61,6 +64,19 @@ export const env = {
 
   // CORS
   ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split('|').map((u) => u.trim()),
+
+  // x402
+  X402_ENABLED: /true/i.test(process.env.X402_ENABLED ?? 'false'),
+  X402_PORT: x402Port,
+  X402_DEFAULT_NETWORK: process.env.X402_DEFAULT_NETWORK || 'eip155:8453',
+  X402_DEFAULT_PAY_TO: process.env.X402_DEFAULT_PAY_TO || '',
+  X402_LEASE_TOKEN_SECRET: process.env.X402_LEASE_TOKEN_SECRET || '',
+  X402_FACILITATOR_URL: process.env.X402_FACILITATOR_URL || undefined,
+  X402_FACILITATOR_BEARER: process.env.X402_FACILITATOR_BEARER || undefined,
+  X402_SYNC_FACILITATOR_ON_START: /true/i.test(process.env.X402_SYNC_FACILITATOR_ON_START ?? 'true'),
+  X402_UPSTREAM_ORIGIN: process.env.X402_UPSTREAM_ORIGIN || `http://127.0.0.1:${port}`,
+  X402_ALLOW_INSECURE_HTTP_UPSTREAM: /true/i.test(process.env.X402_ALLOW_INSECURE_HTTP_UPSTREAM ?? 'false'),
+  X402_ALLOW_PRIVATE_IP_UPSTREAMS: /true/i.test(process.env.X402_ALLOW_PRIVATE_IP_UPSTREAMS ?? 'false'),
 
   // ABI directory for evmdecoder
   ABI_DIRECTORY: process.env.ABI_DIRECTORY || undefined,

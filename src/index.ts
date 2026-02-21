@@ -1,10 +1,12 @@
 import express from 'express'
 import cors from 'cors'
+import { createX402ProxySdk } from '@missionsquad/x402-proxy'
 import { env } from './env'
 import { log } from './utils/logger'
 import { MongoPoolManager } from './utils/mongoPoolManager'
 import type { MongoConnectionParams } from './utils/mongodb'
 import { getChainConfig } from './config/chains'
+import { buildSearchX402Endpoints } from './config/x402-search'
 import { ScannerService } from './services/scanner.service'
 import { WsSubscriptionService } from './services/ws-subscription.service'
 import { runCatchup } from './services/catchup.service'
@@ -19,12 +21,23 @@ import { createNetworkRouter } from './controllers/network.controller'
 import { createSearchRouter } from './controllers/search.controller'
 import { createResolveRouter } from './controllers/resolve.controller'
 import { setSSEHeaders } from './controllers/helpers'
-import type { Request, Response, NextFunction } from 'express'
+import type { Express, Request, Response, NextFunction } from 'express'
 
 const app = express()
+const x402App = env.X402_ENABLED ? express() : null
+type X402Network = `${string}:${string}`
 
-// --- Middleware ---
-app.use(express.json())
+function isX402Network(value: string): value is X402Network {
+  return /^(eip155|solana):[A-Za-z0-9]+$/.test(value)
+}
+
+function parseX402Network(value: string): X402Network {
+  const normalized = value.trim()
+  if (!isX402Network(normalized)) {
+    throw new Error('X402_DEFAULT_NETWORK must match eip155:* or solana:* when X402_ENABLED=true')
+  }
+  return normalized
+}
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
@@ -36,41 +49,87 @@ const corsOptions = {
   },
   credentials: true,
 }
-app.use(cors(corsOptions))
 
-// Request logging middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  const start = Date.now()
+function applySharedMiddleware(targetApp: Express, service: 'api' | 'x402'): void {
+  targetApp.use(express.json())
+  targetApp.use(cors(corsOptions))
 
-  res.on('finish', () => {
-    const duration = Date.now() - start
-    const status = res.statusCode
-    const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info'
-    log({
-      level,
-      msg: `${req.method} ${req.originalUrl} ${status} ${duration}ms`,
-      meta: {
-        method: req.method,
-        path: req.originalUrl,
-        status,
-        duration,
-        ip: req.ip,
-      },
+  // Request logging middleware
+  targetApp.use((req: Request, res: Response, next: NextFunction) => {
+    const start = Date.now()
+
+    res.on('finish', () => {
+      const duration = Date.now() - start
+      const status = res.statusCode
+      const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info'
+      log({
+        level,
+        msg: `[${service}] ${req.method} ${req.originalUrl} ${status} ${duration}ms`,
+        meta: {
+          service,
+          method: req.method,
+          path: req.originalUrl,
+          status,
+          duration,
+          ip: req.ip,
+        },
+      })
     })
-  })
 
-  next()
-})
+    next()
+  })
+}
+
+// --- Middleware ---
+applySharedMiddleware(app, 'api')
+if (x402App) {
+  applySharedMiddleware(x402App, 'x402')
+}
 
 // --- State ---
 let scanner: ScannerService | null = null
 let wsService: WsSubscriptionService | null = null
 let httpServer: ReturnType<typeof app.listen> | null = null
+let x402HttpServer: ReturnType<typeof app.listen> | null = null
 let reResolveTimer: ReturnType<typeof setInterval> | null = null
 let retryTimer: ReturnType<typeof setInterval> | null = null
 const sseClients: Set<Response> = new Set()
 
-// --- Routes ---
+// --- x402 Routes ---
+if (x402App) {
+  const defaultPayTo = env.X402_DEFAULT_PAY_TO.trim()
+  if (defaultPayTo.length === 0) {
+    throw new Error('X402_DEFAULT_PAY_TO is required when X402_ENABLED=true')
+  }
+
+  if (env.X402_LEASE_TOKEN_SECRET.length < 32) {
+    throw new Error('X402_LEASE_TOKEN_SECRET must be at least 32 characters when X402_ENABLED=true')
+  }
+
+  const defaultNetwork = parseX402Network(env.X402_DEFAULT_NETWORK)
+
+  const x402 = createX402ProxySdk({
+    defaultNetwork,
+    defaultPayTo,
+    leaseTokenSecret: env.X402_LEASE_TOKEN_SECRET,
+    facilitator: env.X402_FACILITATOR_URL
+      ? {
+        url: env.X402_FACILITATOR_URL,
+        authorizationBearer: env.X402_FACILITATOR_BEARER,
+      }
+      : undefined,
+    security: {
+      allowInsecureHttpUpstream: env.X402_ALLOW_INSECURE_HTTP_UPSTREAM,
+      allowPrivateIpUpstreams: env.X402_ALLOW_PRIVATE_IP_UPSTREAMS,
+    },
+    syncFacilitatorOnStart: env.X402_SYNC_FACILITATOR_ON_START,
+    endpoints: buildSearchX402Endpoints(env.X402_UPSTREAM_ORIGIN),
+  })
+
+  x402.install(x402App)
+}
+
+// --- API Routes ---
 app.use('/v1/health', createHealthRouter(scanner))
 app.use('/v1/agents', createAgentsRouter())
 app.use('/v1/reputation', createReputationRouter())
@@ -114,7 +173,7 @@ async function startServer(): Promise<void> {
   MongoPoolManager.initialize(mongoParams)
   log({ level: 'info', msg: 'MongoDB connection pool initialized' })
 
-  // 2. Start Express server immediately so the API is available during sync
+  // 2. Start API server immediately so data endpoints are available during sync
   httpServer = app.listen(env.PORT, () => {
     const addr = httpServer!.address()
     const bind = typeof addr === 'string' ? addr : `http://localhost:${addr?.port}`
@@ -123,7 +182,19 @@ async function startServer(): Promise<void> {
     log({ level: 'info', msg: `Scanner enabled: ${env.SCANNER_ENABLED}` })
   })
 
-  // 3. Initialize scanner if enabled (runs in background — API is already serving)
+  // 3. Start x402 proxy server on a separate port when enabled
+  if (x402App) {
+    x402HttpServer = x402App.listen(env.X402_PORT, () => {
+      const addr = x402HttpServer!.address()
+      const bind = typeof addr === 'string' ? addr : `http://localhost:${addr?.port}`
+      log({ level: 'info', msg: `x402 proxy listening on ${bind}` })
+      log({ level: 'info', msg: `x402 upstream origin: ${env.X402_UPSTREAM_ORIGIN}` })
+    })
+  } else {
+    log({ level: 'info', msg: 'x402 proxy disabled' })
+  }
+
+  // 4. Initialize scanner if enabled (runs in background — API is already serving)
   if (env.SCANNER_ENABLED) {
     try {
       const chainConfig = getChainConfig()
@@ -155,12 +226,12 @@ async function startServer(): Promise<void> {
         chainId: chainConfig.chainId,
       }))
 
-      // 4. Run catch-up from last synced block to latest
+      // 5. Run catch-up from last synced block to latest
       log({ level: 'info', msg: 'Starting catch-up sync...' })
       const latestBlock = await runCatchup(scanner, chainConfig.chainId, env.CATCHUP_BATCH_SIZE)
       log({ level: 'info', msg: `Catch-up complete. Latest block: ${latestBlock}` })
 
-      // 5. Start WebSocket subscriptions for real-time events
+      // 6. Start WebSocket subscriptions for real-time events
       wsService = new WsSubscriptionService({
         wsUrl: chainConfig.wsUrl,
         chainId: chainConfig.chainId,
@@ -239,6 +310,15 @@ signals.forEach((signal) => {
         client.end()
       }
       sseClients.clear()
+    }
+
+    if (x402HttpServer) {
+      await new Promise<void>((resolve) => {
+        x402HttpServer!.close(() => {
+          log({ level: 'info', msg: 'x402 proxy stopped accepting new connections' })
+          resolve()
+        })
+      })
     }
 
     if (httpServer) {

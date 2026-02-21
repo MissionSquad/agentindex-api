@@ -10,6 +10,7 @@ Express + TypeScript blockchain scanner and REST API for the [ERC-8004](https://
 - **SSE event stream** — pushes live events to connected clients
 - **URI resolution** — proxies HTTP and IPFS agent metadata URIs
 - **Persisted agent metadata** — resolves and stores off-chain agent URI metadata for API read paths and filters
+- **Optional x402 paywall proxy** — serves paid search/directory endpoints on a dedicated port
 
 ## Prerequisites
 
@@ -38,6 +39,41 @@ All endpoints are read-only (GET).
 | `/v1/resolve/uri` | Proxy HTTP/IPFS metadata URIs |
 | `/v1/resolve/image` | Proxy HTTP/IPFS images |
 | `/v1/events/stream` | Server-Sent Events live feed |
+
+## x402 Deployment Model
+
+This service now supports a **dual-port** deployment model:
+
+- **API port (`PORT`, default `3100`)**: normal, unpriced API routes
+- **x402 port (`X402_PORT`, default `3101`)**: payment-protected proxy routes only
+
+When `X402_ENABLED=true`, the x402 proxy app enforces payment for:
+
+- `GET /v1/search`
+- `GET /v1/search/agents`
+- `GET /v1/agents`
+
+Unpriced endpoint behavior:
+
+- `GET /v1/agents/:agentId` remains unpriced on the API port.
+
+Important upstream rule:
+
+- `X402_UPSTREAM_ORIGIN` must point to the **unpriced API origin** (for example `http://127.0.0.1:3100` locally or internal API service URL in production).
+- Do not point `X402_UPSTREAM_ORIGIN` at the x402 proxy/public paywalled origin.
+
+Minimal local x402 config example:
+
+```dotenv
+X402_ENABLED=true
+X402_PORT=3101
+X402_DEFAULT_NETWORK=eip155:8453
+X402_DEFAULT_PAY_TO=0x...
+X402_LEASE_TOKEN_SECRET=<32+ char random secret>
+X402_UPSTREAM_ORIGIN=http://127.0.0.1:3100
+X402_ALLOW_INSECURE_HTTP_UPSTREAM=true
+X402_ALLOW_PRIVATE_IP_UPSTREAMS=true
+```
 
 ## Search Endpoints
 
@@ -361,6 +397,17 @@ Copy `.env.example` to `.env` and configure:
 | `METADATA_RETRY_MAX_AGE_MS` | `900000` | Age threshold before retrying failed metadata resolutions |
 | `METADATA_RETRY_BATCH_SIZE` | `20` | Max failed metadata records per retry cycle |
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Pipe-delimited CORS origins |
+| `X402_ENABLED` | `false` | Enable/disable x402 proxy app |
+| `X402_PORT` | `3101` | x402 proxy listen port (separate from main API port) |
+| `X402_DEFAULT_NETWORK` | `eip155:8453` | Default x402 CAIP-2 network (`eip155:*` or `solana:*`) |
+| `X402_DEFAULT_PAY_TO` | — | Required recipient address when `X402_ENABLED=true` |
+| `X402_LEASE_TOKEN_SECRET` | — | Required x402 lease token secret; minimum length `32` |
+| `X402_FACILITATOR_URL` | — | Optional facilitator URL override |
+| `X402_FACILITATOR_BEARER` | — | Optional facilitator bearer token |
+| `X402_SYNC_FACILITATOR_ON_START` | `true` | Sync facilitator route metadata during startup |
+| `X402_UPSTREAM_ORIGIN` | `http://127.0.0.1:3100` | Unpriced API origin used by x402 proxy upstream requests |
+| `X402_ALLOW_INSECURE_HTTP_UPSTREAM` | `false` | Allow `http://` upstream targets (set `true` for localhost dev upstreams) |
+| `X402_ALLOW_PRIVATE_IP_UPSTREAMS` | `false` | Allow private/localhost upstream targets (set `true` for localhost dev upstreams) |
 | `ABI_DIRECTORY` | — | Custom ABI directory for evmdecoder |
 
 ## Scripts
@@ -369,6 +416,7 @@ Copy `.env.example` to `.env` and configure:
 yarn dev           # Start dev server (ts-node-dev with auto-reload)
 yarn lint          # TypeScript type check (tsc --noEmit)
 yarn test          # Run tests (vitest)
+yarn test:x402     # Validate x402 unpaid flow (+ optional paid replay via PAYMENT_SIGNATURE)
 yarn test:watch    # Run tests in watch mode
 yarn test:coverage # Run tests with coverage
 yarn backfill:metadata     # Backfill persisted agent metadata
@@ -380,11 +428,32 @@ yarn build         # Compile TypeScript to lib/
 yarn start         # Run compiled output (node lib/index.js)
 ```
 
+### x402 Test Script
+
+`yarn test:x402` runs `scripts/test-x402-payments.sh` and writes artifacts to `tmp/x402-test-<timestamp>/`.
+
+Default targets:
+
+- `API_BASE=http://127.0.0.1:3100`
+- `X402_BASE=http://127.0.0.1:3101`
+
+Behavior:
+
+- Confirms x402 endpoints return `402` with `PAYMENT-REQUIRED` when unpaid.
+- Confirms same paths on `API_BASE` are not paywalled.
+- If `PAYMENT_SIGNATURE` is provided, sends a paid replay request and validates non-`402` response.
+
+Example:
+
+```bash
+PAYMENT_SIGNATURE="<payment-signature-header-value>" yarn test:x402
+```
+
 ## Docker
 
 ```bash
 docker build -t agentindex-api .
-docker run -p 3100:3100 --env-file .env agentindex-api
+docker run -p 3100:3100 -p 3101:3101 --env-file .env agentindex-api
 ```
 
 ## Architecture
@@ -404,3 +473,4 @@ src/
 - **Catchup service** — replays historical blocks in batches from last synced block to chain head
 - **WS subscription service** — subscribes to new blocks via WebSocket with exponential backoff reconnect
 - **Repository layer** — typed MongoDB clients for events, transactions, and graph edges
+- **x402 proxy app** — separate Express app on `X402_PORT` that serves only payment-protected search/directory routes

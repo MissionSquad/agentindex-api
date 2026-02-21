@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/agentindex-api",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "AgentIndex blockchain scanner API",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -13,6 +13,11 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "scrape:uris": "ts-node-dev --transpile-only scripts/scrape-agent-uris.ts",
+    "backfill:metadata": "ts-node-dev --transpile-only scripts/backfill-metadata.ts",
+    "backfill:metadata:dry": "ts-node-dev --transpile-only scripts/backfill-metadata.ts --dry-run",
+    "backfill:metadata:retry": "ts-node-dev --transpile-only scripts/backfill-metadata.ts --retry-failed",
+    "backfill:metadata:force": "ts-node-dev --transpile-only scripts/backfill-metadata.ts --force",
+    "backfill:metadata:reprocess": "ts-node-dev --transpile-only scripts/backfill-metadata.ts --reprocess-all",
     "lint": "tsc --noEmit",
     "prepublishOnly": "yarn lint && yarn test && yarn build"
   },

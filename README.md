@@ -9,6 +9,7 @@ Express + TypeScript blockchain scanner and REST API for the [ERC-8004](https://
 - **EVM decoding** — decodes transaction input/logs via [evmdecoder](https://www.npmjs.com/package/evmdecoder)
 - **SSE event stream** — pushes live events to connected clients
 - **URI resolution** — proxies HTTP and IPFS agent metadata URIs
+- **Persisted agent metadata** — resolves and stores off-chain agent URI metadata for API read paths and filters
 
 ## Prerequisites
 
@@ -33,9 +34,289 @@ All endpoints are read-only (GET).
 | `/v1/analytics/overview` | Ecosystem metrics and heuristics |
 | `/v1/network/graph` | Trust network graph data |
 | `/v1/search` | Global search (agents, addresses, tx hashes, tags, endpoints) |
+| `/v1/search/agents` | Structured agent metadata search (skills, tools, services, protocols, contacts, attributes) |
 | `/v1/resolve/uri` | Proxy HTTP/IPFS metadata URIs |
 | `/v1/resolve/image` | Proxy HTTP/IPFS images |
 | `/v1/events/stream` | Server-Sent Events live feed |
+
+## Search Endpoints
+
+### `GET /v1/search`
+
+Global mixed-entity search that returns `agent`, `address`, `transaction`, `tag`, and `endpoint` hits.
+
+Supported query parameters:
+- `q` (required)
+- `chainId` (optional)
+- `page` (optional, default `1`)
+- `limit` (optional, default `25`, max `100`)
+
+Example request:
+
+```bash
+curl "http://localhost:3100/v1/search?q=mcp%20portfolio&page=1&limit=10"
+```
+
+Example response:
+
+```json
+{
+  "query": "mcp portfolio",
+  "results": {
+    "items": [
+      {
+        "type": "agent",
+        "id": "13445",
+        "title": "Gekko",
+        "subtitle": "Agent 13445",
+        "route": "/agents/13445"
+      },
+      {
+        "type": "endpoint",
+        "id": "endpoint:https://www.gekkoterminal.xyz/mcp",
+        "title": "Endpoint: https://www.gekkoterminal.xyz/mcp",
+        "subtitle": "Agent 13445",
+        "route": "/reputation?endpoint=https%3A%2F%2Fwww.gekkoterminal.xyz%2Fmcp"
+      }
+    ],
+    "meta": {
+      "page": 1,
+      "limit": 10,
+      "total": 2,
+      "hasNextPage": false
+    }
+  }
+}
+```
+
+### `GET /v1/search/agents`
+
+Structured metadata search over persisted `agent_metadata`. This endpoint is intended for facet-driven UI search.
+
+Supported query parameters:
+- Paging/scope: `chainId`, `page`, `limit`, `status` (`resolved` | `failed` | `pending` | `all`)
+- Free text: `q` (tokenized against indexed `searchTerms`)
+- Boolean filters: `x402Support`, `active`, `includeRaw`
+- Service filters: `service`, `endpoint`, `version`, `skill`, `domain`, `tool`, `capability`, `a2aSkill`, `mcpTool`
+- Registration filters: `registration`, `registrationRegistry`, `registrationAgentId`
+- Attribute filters: `protocol`, `dataFeed`, `tag`, `blockchain`, `attributeChainId`
+- Contact filters: `email`, `twitter`
+- Other filters: `trust`, `type`, `name`
+
+Notes:
+- String filters support comma-separated or repeated query parameters.
+- String filters are case-insensitive and matched through indexed `searchTerms`.
+- `includeRaw=true` includes full `rawMetadata` per row.
+
+Example request:
+
+```bash
+curl "http://localhost:3100/v1/search/agents?q=portfolio%20manager&service=mcp&tool=get_portfolio&protocol=morpho&tag=defi&email=contact@gekkoterminal.ai&x402Support=true&page=1&limit=20"
+```
+
+Example response:
+
+```json
+{
+  "query": "portfolio manager",
+  "filters": {
+    "status": "resolved",
+    "x402Support": true,
+    "active": null,
+    "service": ["mcp"],
+    "endpoint": [],
+    "version": [],
+    "skill": [],
+    "domain": [],
+    "tool": ["get_portfolio"],
+    "capability": [],
+    "a2aSkill": [],
+    "mcpTool": [],
+    "registration": [],
+    "registrationRegistry": [],
+    "registrationAgentId": [],
+    "trust": [],
+    "protocol": ["morpho"],
+    "dataFeed": [],
+    "tag": ["defi"],
+    "blockchain": [],
+    "attributeChainId": [],
+    "email": ["contact@gekkoterminal.ai"],
+    "twitter": [],
+    "type": [],
+    "name": []
+  },
+  "results": {
+    "items": [
+      {
+        "chainId": 1,
+        "agentId": 13445,
+        "uri": "https://www.gekkoterminal.xyz/agent.json",
+        "uriHash": "cbf0d2...",
+        "name": "Gekko",
+        "description": "AI Agent Portfolio Manager...",
+        "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+        "image": "https://www.gekkoterminal.xyz/gekkoai.jpg",
+        "active": true,
+        "x402Support": true,
+        "erc8004Support": null,
+        "services": ["web", "agentWallet", "A2A", "MCP", "email", "twitter"],
+        "registrations": ["eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"],
+        "supportedTrusts": ["reputation", "crypto-economic"],
+        "serviceEntries": [],
+        "registrationEntries": [],
+        "serviceEndpoints": ["https://www.gekkoterminal.xyz/mcp"],
+        "serviceVersions": ["2025-11-25"],
+        "serviceSkills": [],
+        "serviceDomains": [],
+        "serviceTools": ["get_portfolio", "analyze_token"],
+        "serviceCapabilities": ["tools", "resources", "prompts"],
+        "serviceA2aSkills": ["portfolio_management", "yield_optimization"],
+        "serviceMcpTools": ["get_portfolio", "simulate_swap"],
+        "registrationRegistries": ["eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"],
+        "registrationAgentIds": [13445],
+        "attributeProtocols": ["morpho", "yearn"],
+        "attributeDataFeeds": ["morpho-api", "yearn-ydaemon"],
+        "attributeTags": ["defi", "portfolio-management"],
+        "attributeBlockchains": ["base"],
+        "attributeChainIds": [8453],
+        "contactEmails": ["contact@gekkoterminal.ai"],
+        "contactTwitter": ["https://twitter.com/Gekko_Agent"],
+        "resolveStatus": "resolved",
+        "resolveError": null,
+        "resolvedAt": 1770159729000,
+        "eventTimestamp": 1770159729000,
+        "eventTxHash": "0x...",
+        "eventBlockNumber": 12345678
+      }
+    ],
+    "meta": {
+      "page": 1,
+      "limit": 20,
+      "total": 1,
+      "hasNextPage": false
+    }
+  }
+}
+```
+
+### `GET /v1/agents`
+
+Directory endpoint with list-level search filters and pagination.
+
+Supported search/filter parameters include:
+- `protocol` (case-insensitive against persisted service names)
+- `x402Support`
+- `tag`
+- `hasFeedback`
+- `hasResponses`
+- `hasBeenTransferred`
+- `registeredSinceDays`
+- `sort` (`newest`, `oldest`, `most-feedback`, `highest-reputation`, `recently-active`)
+- `page`, `limit`, `chainId`
+
+Example request:
+
+```bash
+curl "http://localhost:3100/v1/agents?protocol=a2a&x402Support=true&sort=most-feedback&page=1&limit=25"
+```
+
+Example response:
+
+```json
+{
+  "items": [
+    {
+      "chainId": 1,
+      "agentId": "6888",
+      "ownerAddress": "0x...",
+      "originalRegistrant": "0x...",
+      "agentUri": "https://minara.ai/agent.json",
+      "name": "Minara AI",
+      "description": "Intelligent crypto assistant powered by AI.",
+      "imageUrl": "https://minara.ai/images/minara-logo-lg.png",
+      "tags": [],
+      "services": ["A2A", "OASF", "web", "twitter", "email"],
+      "x402Support": true,
+      "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+      "active": true,
+      "erc8004Support": null,
+      "registrations": ["eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"],
+      "supportedTrusts": ["reputation", "crypto-economic", "tee-attestation"],
+      "registrationTxHash": "0x...",
+      "registrationTimestamp": 1769757405000,
+      "hasBeenTransferred": false,
+      "transferCount": 0,
+      "feedbackCount": 12,
+      "responseCount": 7,
+      "averageReputation": 4.6,
+      "lastActiveTimestamp": 1769760000000
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "limit": 25,
+    "total": 1,
+    "hasNextPage": false
+  }
+}
+```
+
+### `GET /v1/agents/:agentId`
+
+Returns a full agent profile with on-chain activity and resolved off-chain metadata.
+
+`resolvedMetadata.links` now provides normalized, clickable contact links extracted from metadata:
+- `kind`: `web` | `twitter` | `email`
+- `label`: display label
+- `href`: safe link target (`https://...` or `mailto:...`)
+- `endpoint`: original/normalized endpoint value
+- `serviceName`: originating service name when present
+
+Example request:
+
+```bash
+curl "http://localhost:3100/v1/agents/6888"
+```
+
+Example response excerpt:
+
+```json
+{
+  "agent": {
+    "agentId": "6888",
+    "name": "Minara AI"
+  },
+  "resolvedMetadata": {
+    "name": "Minara AI",
+    "services": ["A2A", "OASF", "web", "twitter", "email"],
+    "links": [
+      {
+        "kind": "web",
+        "label": "minara.ai",
+        "href": "https://minara.ai",
+        "endpoint": "https://minara.ai",
+        "serviceName": "web"
+      },
+      {
+        "kind": "twitter",
+        "label": "@minara",
+        "href": "https://x.com/minara",
+        "endpoint": "https://x.com/minara",
+        "serviceName": "twitter"
+      },
+      {
+        "kind": "email",
+        "label": "support@minara.ai",
+        "href": "mailto:support@minara.ai",
+        "endpoint": "support@minara.ai",
+        "serviceName": "email"
+      }
+    ],
+    "resolveStatus": "resolved"
+  }
+}
+```
 
 ## Environment Variables
 
@@ -65,6 +346,20 @@ Copy `.env.example` to `.env` and configure:
 | `SCANNER_TX_CONCURRENCY` | `8` | Concurrent transaction processing limit |
 | `WS_RECONNECT_BASE_DELAY_MS` | `1000` | WebSocket reconnect backoff base |
 | `WS_RECONNECT_MAX_DELAY_MS` | `30000` | WebSocket reconnect backoff ceiling |
+| `IPFS_GATEWAY_URLS` | `https://ipfs.io/ipfs/|https://cloudflare-ipfs.com/ipfs/|https://dweb.link/ipfs/` | Ordered IPFS gateway list for metadata resolution |
+| `METADATA_HTTP_TIMEOUT_MS` | `10000` | HTTP metadata fetch timeout |
+| `METADATA_IPFS_TIMEOUT_MS` | `30000` | IPFS gateway fetch timeout per attempt |
+| `METADATA_FETCH_RETRIES` | `2` | Retry attempts for HTTP/IPFS metadata fetches |
+| `METADATA_RETRY_BASE_DELAY_MS` | `400` | Base retry backoff delay for metadata fetches |
+| `METADATA_RETRY_MAX_DELAY_MS` | `5000` | Max retry backoff delay for metadata fetches |
+| `METADATA_FETCH_CONCURRENCY` | `8` | Concurrent metadata resolution limit |
+| `METADATA_IGNORED_URI_PREFIXES` | `https://ag0.xyz` | Pipe-delimited URI prefixes to skip during metadata resolution/retry |
+| `METADATA_RE_RESOLVE_INTERVAL_MS` | `3600000` | Periodic stale metadata re-resolution interval |
+| `METADATA_RE_RESOLVE_MAX_AGE_MS` | `86400000` | Age threshold before HTTP/IPFS metadata is re-resolved |
+| `METADATA_RE_RESOLVE_BATCH_SIZE` | `50` | Max stale metadata records per re-resolution cycle |
+| `METADATA_RETRY_INTERVAL_MS` | `900000` | Interval for retrying failed metadata resolutions |
+| `METADATA_RETRY_MAX_AGE_MS` | `900000` | Age threshold before retrying failed metadata resolutions |
+| `METADATA_RETRY_BATCH_SIZE` | `20` | Max failed metadata records per retry cycle |
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Pipe-delimited CORS origins |
 | `ABI_DIRECTORY` | — | Custom ABI directory for evmdecoder |
 
@@ -76,6 +371,11 @@ yarn lint          # TypeScript type check (tsc --noEmit)
 yarn test          # Run tests (vitest)
 yarn test:watch    # Run tests in watch mode
 yarn test:coverage # Run tests with coverage
+yarn backfill:metadata     # Backfill persisted agent metadata
+yarn backfill:metadata:dry # Dry-run metadata backfill
+yarn backfill:metadata:retry # Retry failed metadata backfill entries
+yarn backfill:metadata:force # Include already-resolved agents in the run
+yarn backfill:metadata:reprocess # Re-fetch/re-extract all candidates (refresh indexed facets)
 yarn build         # Compile TypeScript to lib/
 yarn start         # Run compiled output (node lib/index.js)
 ```

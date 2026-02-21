@@ -8,6 +8,7 @@ import { getChainConfig } from './config/chains'
 import { ScannerService } from './services/scanner.service'
 import { WsSubscriptionService } from './services/ws-subscription.service'
 import { runCatchup } from './services/catchup.service'
+import { reResolveStaleMetadata, retryFailedResolutions } from './services/agent-metadata.service'
 import { createHealthRouter } from './controllers/health.controller'
 import { createAgentsRouter } from './controllers/agents.controller'
 import { createReputationRouter } from './controllers/reputation.controller'
@@ -65,6 +66,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 let scanner: ScannerService | null = null
 let wsService: WsSubscriptionService | null = null
 let httpServer: ReturnType<typeof app.listen> | null = null
+let reResolveTimer: ReturnType<typeof setInterval> | null = null
+let retryTimer: ReturnType<typeof setInterval> | null = null
 const sseClients: Set<Response> = new Set()
 
 // --- Routes ---
@@ -170,6 +173,36 @@ async function startServer(): Promise<void> {
       })
       await wsService.start()
       log({ level: 'info', msg: 'WebSocket subscription service started' })
+
+      reResolveTimer = setInterval(async () => {
+        try {
+          const count = await reResolveStaleMetadata(
+            chainConfig.chainId,
+            env.METADATA_RE_RESOLVE_MAX_AGE_MS,
+            env.METADATA_RE_RESOLVE_BATCH_SIZE,
+          )
+          if (count > 0) {
+            log({ level: 'info', msg: `Re-resolved ${count} stale agent metadata entries` })
+          }
+        } catch (error) {
+          log({ level: 'error', msg: 'Periodic metadata re-resolution failed', error })
+        }
+      }, env.METADATA_RE_RESOLVE_INTERVAL_MS)
+
+      retryTimer = setInterval(async () => {
+        try {
+          const count = await retryFailedResolutions(
+            chainConfig.chainId,
+            env.METADATA_RETRY_MAX_AGE_MS,
+            env.METADATA_RETRY_BATCH_SIZE,
+          )
+          if (count > 0) {
+            log({ level: 'info', msg: `Retried ${count} failed metadata resolutions` })
+          }
+        } catch (error) {
+          log({ level: 'error', msg: 'Failed metadata retry job error', error })
+        }
+      }, env.METADATA_RETRY_INTERVAL_MS)
     } catch (error) {
       log({ level: 'error', msg: 'Scanner initialization failed', error })
       log({ level: 'warn', msg: 'API will run without scanner. Existing data remains queryable.' })
@@ -188,6 +221,16 @@ signals.forEach((signal) => {
     if (wsService) {
       wsService.stop()
       log({ level: 'info', msg: 'WebSocket subscription service stopped' })
+    }
+
+    if (reResolveTimer !== null) {
+      clearInterval(reResolveTimer)
+      reResolveTimer = null
+    }
+
+    if (retryTimer !== null) {
+      clearInterval(retryTimer)
+      retryTimer = null
     }
 
     if (sseClients.size > 0) {

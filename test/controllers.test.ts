@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Router, Request, Response } from 'express'
 
-const { mockEventDb, mockTxDb, mockCallDb, mockGraphDbs } = vi.hoisted(() => {
+const {
+  mockEventDb,
+  mockTxDb,
+  mockCallDb,
+  mockGraphDbs,
+  mockAgentMetadataDb,
+  mockGetAgentMetadataBatch,
+  mockGetAgentMetadataByAgent,
+  mockGetAgentMetadataClient,
+} = vi.hoisted(() => {
   const mockEventDb = {
     find: vi.fn().mockResolvedValue([]),
     findOne: vi.fn().mockResolvedValue(null),
@@ -22,7 +31,26 @@ const { mockEventDb, mockTxDb, mockCallDb, mockGraphDbs } = vi.hoisted(() => {
     response: { find: vi.fn().mockResolvedValue([]) },
     review: { find: vi.fn().mockResolvedValue([]) },
   }
-  return { mockEventDb, mockTxDb, mockCallDb, mockGraphDbs }
+  const mockAgentMetadataDb = {
+    find: vi.fn().mockResolvedValue([]),
+    findOne: vi.fn().mockResolvedValue(null),
+    count: vi.fn().mockResolvedValue(0),
+    upsert: vi.fn().mockResolvedValue({ modifiedCount: 1 }),
+  }
+  const mockGetAgentMetadataBatch = vi.fn().mockResolvedValue([])
+  const mockGetAgentMetadataByAgent = vi.fn().mockResolvedValue(null)
+  const mockGetAgentMetadataClient = vi.fn().mockResolvedValue(mockAgentMetadataDb)
+
+  return {
+    mockEventDb,
+    mockTxDb,
+    mockCallDb,
+    mockGraphDbs,
+    mockAgentMetadataDb,
+    mockGetAgentMetadataBatch,
+    mockGetAgentMetadataByAgent,
+    mockGetAgentMetadataClient,
+  }
 })
 
 vi.mock('../src/repositories/event.repository', () => ({
@@ -49,6 +77,12 @@ vi.mock('../src/repositories/graph.repository', () => ({
   getRegistrantEdgeClient: vi.fn().mockResolvedValue(mockGraphDbs.registrant),
   getAgentReviewEdgeClient: vi.fn().mockResolvedValue(mockGraphDbs.agentReview),
   getResponseEdgeClient: vi.fn().mockResolvedValue(mockGraphDbs.response),
+}))
+
+vi.mock('../src/repositories/agent-metadata.repository', () => ({
+  getAgentMetadataBatch: mockGetAgentMetadataBatch,
+  getAgentMetadataByAgent: mockGetAgentMetadataByAgent,
+  getAgentMetadataClient: mockGetAgentMetadataClient,
 }))
 
 vi.mock('../src/services/analytics.service', () => ({
@@ -149,6 +183,12 @@ function resetMocks() {
   mockGraphDbs.registrant.find.mockReset().mockResolvedValue([])
   mockGraphDbs.response.find.mockReset().mockResolvedValue([])
   mockGraphDbs.review.find.mockReset().mockResolvedValue([])
+  mockAgentMetadataDb.find.mockReset().mockResolvedValue([])
+  mockAgentMetadataDb.findOne.mockReset().mockResolvedValue(null)
+  mockAgentMetadataDb.count.mockReset().mockResolvedValue(0)
+  mockGetAgentMetadataBatch.mockReset().mockResolvedValue([])
+  mockGetAgentMetadataByAgent.mockReset().mockResolvedValue(null)
+  mockGetAgentMetadataClient.mockReset().mockResolvedValue(mockAgentMetadataDb)
 }
 
 describe('Health Controller', () => {
@@ -235,6 +275,100 @@ describe('Search Controller', () => {
     expect(Array.isArray(results)).toBe(true)
     expect((results[0] as Record<string, unknown>).type).toBe('agent')
   })
+
+  it('GET /agents returns structured metadata search results', async () => {
+    const router = createSearchRouter()
+    mockAgentMetadataDb.count.mockResolvedValueOnce(1)
+    mockAgentMetadataDb.find.mockResolvedValueOnce([
+      {
+        id: '1:42',
+        chainId: 1,
+        agentId: 42,
+        uri: 'https://example.com/agent.json',
+        uriHash: 'hash',
+        name: 'Agent Forty Two',
+        description: 'MCP and A2A enabled',
+        type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
+        image: null,
+        active: true,
+        x402Support: true,
+        erc8004Support: null,
+        services: ['MCP', 'A2A'],
+        registrations: ['eip155:1:0xregistry'],
+        supportedTrusts: ['reputation'],
+        serviceTools: ['get_portfolio'],
+        attributeProtocols: ['morpho'],
+        contactEmails: ['support@example.com'],
+        contactTwitter: ['https://x.com/example'],
+        resolveStatus: 'resolved',
+        resolveError: null,
+        resolvedAt: 1000,
+        eventTimestamp: 1000,
+        eventTxHash: '0xtx',
+        eventBlockNumber: 10,
+      },
+    ])
+
+    const res = await invokeRoute(router, 'get', '/agents', {
+      query: {
+        q: 'portfolio manager',
+        service: 'mcp',
+        protocol: 'morpho',
+        tool: 'get_portfolio',
+        email: 'support@example.com',
+        x402Support: 'true',
+      },
+    })
+
+    const body = res.body as Record<string, unknown>
+    const results = (body.results as Record<string, unknown>).items as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body.query).toBe('portfolio manager')
+    expect(results).toHaveLength(1)
+    expect(results[0].agentId).toBe(42)
+    expect(results[0].serviceTools).toEqual(['get_portfolio'])
+  })
+
+  it('GET /agents includes raw metadata when includeRaw=true', async () => {
+    const router = createSearchRouter()
+    mockAgentMetadataDb.count.mockResolvedValueOnce(1)
+    mockAgentMetadataDb.find.mockResolvedValueOnce([
+      {
+        id: '1:7',
+        chainId: 1,
+        agentId: 7,
+        uri: 'https://example.com/agent.json',
+        uriHash: 'hash',
+        name: 'Agent Seven',
+        description: null,
+        type: null,
+        image: null,
+        active: null,
+        x402Support: null,
+        erc8004Support: null,
+        services: [],
+        registrations: [],
+        supportedTrusts: [],
+        rawMetadata: { name: 'Agent Seven', services: [] },
+        resolveStatus: 'resolved',
+        resolveError: null,
+        resolvedAt: 1000,
+        eventTimestamp: 1000,
+        eventTxHash: '0xtx',
+        eventBlockNumber: 10,
+      },
+    ])
+
+    const res = await invokeRoute(router, 'get', '/agents', {
+      query: { includeRaw: 'true' },
+    })
+
+    const body = res.body as Record<string, unknown>
+    const first = ((body.results as Record<string, unknown>).items as Array<Record<string, unknown>>)[0]
+    expect(res.status).toBe(200)
+    expect(first.rawMetadata).toEqual({ name: 'Agent Seven', services: [] })
+  })
 })
 
 describe('Network Controller', () => {
@@ -315,13 +449,74 @@ describe('Agents Controller', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+    mockGetAgentMetadataByAgent.mockResolvedValueOnce({
+      id: '1:100',
+      chainId: 1,
+      agentId: 100,
+      uri: 'https://example.com/agent.json',
+      uriHash: 'hash',
+      name: 'Agent Hundred',
+      description: 'Test metadata',
+      type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
+      image: null,
+      active: true,
+      x402Support: true,
+      erc8004Support: null,
+      services: ['web', 'twitter', 'email', 'mcp'],
+      registrations: [],
+      supportedTrusts: [],
+      serviceEntries: [
+        { name: 'web', endpoint: 'https://example.com/app' },
+        { name: 'twitter', endpoint: '@agent100' },
+        { name: 'email', endpoint: 'CONTACT@example.com' },
+        { name: 'mcp', endpoint: 'https://example.com/mcp' },
+        { name: 'web', endpoint: 'javascript:alert(1)' },
+      ],
+      contactEmails: ['contact@example.com'],
+      contactTwitter: ['https://twitter.com/agent100'],
+      rawMetadata: {
+        external_url: 'https://example.com/app',
+      },
+      resolveStatus: 'resolved',
+      resolveError: null,
+      resolvedAt: 1700000000000,
+      eventTimestamp: 1700000000000,
+      eventTxHash: '0xreg',
+      eventBlockNumber: 1,
+    })
 
     const res = await invokeRoute(router, 'get', '/:agentId', { params: { agentId: '100' } })
     const body = res.body as Record<string, unknown>
+    const resolvedMetadata = body.resolvedMetadata as Record<string, unknown>
+    const links = resolvedMetadata.links as Array<Record<string, unknown>>
 
     expect(res.status).toBe(200)
     expect((body.agent as Record<string, unknown>).agentId).toBe('100')
     expect((body.feedback as Record<string, unknown>).items).toBeDefined()
+    expect(Array.isArray(links)).toBe(true)
+    expect(links).toEqual([
+      {
+        kind: 'web',
+        label: 'example.com/app',
+        href: 'https://example.com/app',
+        endpoint: 'https://example.com/app',
+        serviceName: 'web',
+      },
+      {
+        kind: 'twitter',
+        label: '@agent100',
+        href: 'https://x.com/agent100',
+        endpoint: '@agent100',
+        serviceName: 'twitter',
+      },
+      {
+        kind: 'email',
+        label: 'contact@example.com',
+        href: 'mailto:contact@example.com',
+        endpoint: 'contact@example.com',
+        serviceName: 'email',
+      },
+    ])
   })
 })
 

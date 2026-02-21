@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { fetchOffchainContent, parseRegistrationJson } from '../src/services/offchain-fetch.service'
+import { gzipSync } from 'node:zlib'
 
 // Mock logger to suppress output during tests
 vi.mock('../src/utils/logger', () => ({
@@ -12,10 +13,31 @@ describe('fetchOffchainContent', () => {
     expect(result).toBeNull()
   })
 
+  it('accepts inline JSON payloads in the URI field', async () => {
+    const uri = '{"name":"saltyboi_cash","type":"user"}'
+    const result = await fetchOffchainContent(uri)
+    expect(result).not.toBeNull()
+    expect(result!.toString('utf-8')).toBe(uri)
+    expect(parseRegistrationJson(result!)).toEqual({
+      name: 'saltyboi_cash',
+      type: 'user',
+    })
+  })
+
   it('decodes a data: URI with base64 content', async () => {
     const payload = JSON.stringify({ name: 'TestAgent' })
     const base64 = Buffer.from(payload).toString('base64')
     const uri = `data:application/json;base64,${base64}`
+
+    const result = await fetchOffchainContent(uri)
+    expect(result).not.toBeNull()
+    expect(result!.toString('utf-8')).toBe(payload)
+  })
+
+  it('decodes a gzip+base64 data: URI', async () => {
+    const payload = JSON.stringify({ name: 'GzipAgent' })
+    const compressed = gzipSync(Buffer.from(payload, 'utf-8')).toString('base64')
+    const uri = `data:application/json;enc=gzip;base64,${compressed}`
 
     const result = await fetchOffchainContent(uri)
     expect(result).not.toBeNull()
@@ -32,19 +54,32 @@ describe('fetchOffchainContent', () => {
     expect(result).toBeNull()
   })
 
-  it('handles ipfs:// URIs by converting to gateway URL', async () => {
-    // Mock global fetch to avoid real HTTP calls
-    const mockFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(Buffer.from('ipfs content'), { status: 200 }),
-    )
+  it('handles ipfs:// URIs using configured gateway candidates', async () => {
+    const mockFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(Buffer.from('ipfs content'), { status: 200 }))
 
     const result = await fetchOffchainContent('ipfs://QmTest123')
     expect(result).not.toBeNull()
     expect(result!.toString('utf-8')).toBe('ipfs content')
     expect(mockFetch).toHaveBeenCalledWith(
-      'https://ipfs.io/ipfs/QmTest123',
+      expect.stringContaining('/QmTest123'),
       expect.objectContaining({ headers: { 'User-Agent': 'ERC8004-Scanner/1.0' } }),
     )
+    mockFetch.mockRestore()
+  })
+
+  it('falls back to the next IPFS gateway when the first fails', async () => {
+    const mockFetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(new Response(Buffer.from('ipfs via fallback'), { status: 200 }))
+
+    const result = await fetchOffchainContent('ipfs://QmFallback')
+    expect(result).not.toBeNull()
+    expect(result!.toString('utf-8')).toBe('ipfs via fallback')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(mockFetch.mock.calls[0][0]).toContain('ipfs.io')
+    expect(mockFetch.mock.calls[1][0]).toContain('cloudflare-ipfs.com')
     mockFetch.mockRestore()
   })
 

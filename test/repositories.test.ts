@@ -233,3 +233,49 @@ describe('graph.repository', () => {
     await deleteGraphEdgesByBlock(1, 100)
   })
 })
+
+describe('agent-metadata.repository', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('upsertAgentMetadata calls upsert with id filter', async () => {
+    const { upsertAgentMetadata } = await import('../src/repositories/agent-metadata.repository')
+    const row = { id: '1:7', chainId: 1, agentId: 7 } as any
+
+    await upsertAgentMetadata(row)
+    expect(mockClient.upsert).toHaveBeenCalledWith(row, { id: '1:7' })
+  })
+
+  it('getAgentMetadataByAgent calls findOne with chainId + agentId', async () => {
+    const { getAgentMetadataByAgent } = await import('../src/repositories/agent-metadata.repository')
+    mockClient.findOne.mockResolvedValueOnce({ id: '1:7', chainId: 1, agentId: 7 })
+
+    const result = await getAgentMetadataByAgent(1, 7)
+    expect(mockClient.findOne).toHaveBeenCalledWith({ chainId: 1, agentId: 7 })
+    expect(result).toEqual({ id: '1:7', chainId: 1, agentId: 7 })
+  })
+
+  it('getAgentMetadataBatch uses $in for ids', async () => {
+    const { getAgentMetadataBatch } = await import('../src/repositories/agent-metadata.repository')
+    mockClient.find.mockResolvedValueOnce([{ id: '1:7', chainId: 1, agentId: 7 }])
+
+    const result = await getAgentMetadataBatch(1, [7, 8, 7])
+    expect(mockClient.find).toHaveBeenCalledWith({ chainId: 1, agentId: { $in: [7, 8] } })
+    expect(result).toEqual([{ id: '1:7', chainId: 1, agentId: 7 }])
+  })
+})
+
+describe('agent-metadata-raw.repository', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('upsertAgentMetadataRawSnapshot calls upsert with id filter', async () => {
+    const { upsertAgentMetadataRawSnapshot } = await import('../src/repositories/agent-metadata-raw.repository')
+    const row = { id: '1:7:abc', chainId: 1, agentId: 7, uriHash: 'abc' } as any
+
+    await upsertAgentMetadataRawSnapshot(row)
+    expect(mockClient.upsert).toHaveBeenCalledWith(row, { id: '1:7:abc' })
+  })
+})

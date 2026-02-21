@@ -30,7 +30,7 @@ export async function runCatchup(
   let processed = 0
   for (let blockNum = startBlock; blockNum <= latestBlock; blockNum++) {
     try {
-      await scanner.processBlock(blockNum)
+      await scanner.processBlock(blockNum, { awaitMetadataResolution: false })
       processed++
 
       if (processed % batchSize === 0 || blockNum === latestBlock) {
@@ -67,7 +67,7 @@ export async function fillGap(
   })
 
   for (let blockNum = fromBlock; blockNum <= toBlock; blockNum++) {
-    await scanner.processBlock(blockNum)
+    await scanner.processBlock(blockNum, { awaitMetadataResolution: false })
   }
 
   log({ level: 'info', msg: `Gap fill complete: ${count} blocks` })

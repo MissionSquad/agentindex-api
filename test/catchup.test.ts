@@ -44,9 +44,9 @@ describe('runCatchup', () => {
 
     expect(result).toBe(103)
     expect(scanner.processBlock).toHaveBeenCalledTimes(3)
-    expect(scanner.processBlock).toHaveBeenCalledWith(101)
-    expect(scanner.processBlock).toHaveBeenCalledWith(102)
-    expect(scanner.processBlock).toHaveBeenCalledWith(103)
+    expect(scanner.processBlock).toHaveBeenCalledWith(101, { awaitMetadataResolution: false })
+    expect(scanner.processBlock).toHaveBeenCalledWith(102, { awaitMetadataResolution: false })
+    expect(scanner.processBlock).toHaveBeenCalledWith(103, { awaitMetadataResolution: false })
   })
 
   it('starts from SCANNER_START_BLOCK when no sync state exists', async () => {
@@ -57,9 +57,9 @@ describe('runCatchup', () => {
 
     expect(result).toBe(24339872)
     expect(scanner.processBlock).toHaveBeenCalledTimes(3)
-    expect(scanner.processBlock).toHaveBeenCalledWith(24339870)
-    expect(scanner.processBlock).toHaveBeenCalledWith(24339871)
-    expect(scanner.processBlock).toHaveBeenCalledWith(24339872)
+    expect(scanner.processBlock).toHaveBeenCalledWith(24339870, { awaitMetadataResolution: false })
+    expect(scanner.processBlock).toHaveBeenCalledWith(24339871, { awaitMetadataResolution: false })
+    expect(scanner.processBlock).toHaveBeenCalledWith(24339872, { awaitMetadataResolution: false })
   })
 
   it('returns immediately when already at latest block', async () => {
@@ -105,9 +105,9 @@ describe('fillGap', () => {
     await fillGap(scanner as any, 1, 50, 52)
 
     expect(scanner.processBlock).toHaveBeenCalledTimes(3)
-    expect(scanner.processBlock).toHaveBeenCalledWith(50)
-    expect(scanner.processBlock).toHaveBeenCalledWith(51)
-    expect(scanner.processBlock).toHaveBeenCalledWith(52)
+    expect(scanner.processBlock).toHaveBeenCalledWith(50, { awaitMetadataResolution: false })
+    expect(scanner.processBlock).toHaveBeenCalledWith(51, { awaitMetadataResolution: false })
+    expect(scanner.processBlock).toHaveBeenCalledWith(52, { awaitMetadataResolution: false })
   })
 
   it('returns immediately when fromBlock > toBlock', async () => {
@@ -124,6 +124,6 @@ describe('fillGap', () => {
     await fillGap(scanner as any, 1, 75, 75)
 
     expect(scanner.processBlock).toHaveBeenCalledTimes(1)
-    expect(scanner.processBlock).toHaveBeenCalledWith(75)
+    expect(scanner.processBlock).toHaveBeenCalledWith(75, { awaitMetadataResolution: false })
   })
 })

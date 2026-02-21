@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express'
 import type { Document } from 'mongodb'
 import { getAnalyticsOverview } from '../services/analytics.service'
 import { getEventFactClient } from '../repositories/event.repository'
+import { getAgentMetadataBatch } from '../repositories/agent-metadata.repository'
+import type { AgentMetadata } from '../types/mongo'
 import { env } from '../env'
 
 export function createAnalyticsRouter(): Router {
@@ -64,6 +66,18 @@ export function createAnalyticsRouter(): Router {
       )
       // Preserve raw _id values (numbers in MongoDB) for $in queries
       const topAgentRawIds = validTopAgents.map((row) => row._id)
+      const topAgentMetadataRows = topAgentRawIds.length > 0
+        ? await getAgentMetadataBatch(
+          chainId,
+          topAgentRawIds
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id)),
+        )
+        : []
+      const topAgentMetadataMap = new Map<string, AgentMetadata>()
+      for (const row of topAgentMetadataRows) {
+        topAgentMetadataMap.set(String(row.agentId), row)
+      }
 
       const [topAgentFeedbackStats, topAgentLatestUris, topAgentRegistrationUris] = topAgentRawIds.length > 0
         ? await Promise.all([
@@ -140,6 +154,7 @@ export function createAnalyticsRouter(): Router {
       const enrichedTopAgents = validTopAgents.map((row) => {
         const agentId = String(row._id)
         const stats = feedbackStatsMap.get(agentId)
+        const metadata = topAgentMetadataMap.get(agentId)
         const agentUri = uriUpdateMap.get(agentId) ?? registrationUriMap.get(agentId) ?? ''
         const feedbackCount = row.count
         const uniqueClients = stats?.uniqueClients ?? 0
@@ -148,6 +163,8 @@ export function createAnalyticsRouter(): Router {
           agentId,
           value: feedbackCount,
           agentUri,
+          name: metadata?.name ?? null,
+          imageUrl: metadata?.image ?? null,
           reputationScore: stats?.avg ?? null,
           clientDiversity: feedbackCount > 0 ? uniqueClients / feedbackCount : null,
         }

@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express'
 import type { Document } from 'mongodb'
 import { getEventFactClient } from '../repositories/event.repository'
+import { getAgentMetadataBatch, getAgentMetadataByAgent } from '../repositories/agent-metadata.repository'
 import { parsePagination } from './helpers'
 import { env } from '../env'
-import type { EventFact } from '../types/mongo'
+import type { AgentMetadata, EventFact } from '../types/mongo'
 import { buildNetworkGraph } from '../services/network-graph.service'
 
 interface FeedbackEntryDto {
@@ -52,6 +53,11 @@ interface AgentSummaryDto {
   tags: string[]
   services: string[]
   x402Support: boolean
+  type: string | null
+  active: boolean | null
+  erc8004Support: boolean | null
+  registrations: string[]
+  supportedTrusts: string[]
   registrationTxHash: string
   registrationTimestamp: number
   hasBeenTransferred: boolean
@@ -60,6 +66,231 @@ interface AgentSummaryDto {
   responseCount: number
   averageReputation: number | null
   lastActiveTimestamp: number | null
+}
+
+type ResolvedMetadataLinkKind = 'web' | 'email' | 'twitter'
+
+interface ResolvedMetadataLinkDto {
+  kind: ResolvedMetadataLinkKind
+  label: string
+  href: string
+  endpoint: string
+  serviceName: string | null
+}
+
+const WEB_SERVICE_NAMES = new Set(['web', 'website', 'site', 'homepage'])
+const EMAIL_SERVICE_NAMES = new Set(['email', 'mail', 'support'])
+const TWITTER_SERVICE_NAMES = new Set(['twitter', 'x', 'x.com'])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function nonEmptyString(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(value)
+}
+
+function parseHttpUrl(value: string): URL | null {
+  try {
+    const url = new URL(value)
+    const protocol = url.protocol.toLowerCase()
+    if (protocol !== 'http:' && protocol !== 'https:') return null
+    return url
+  } catch {
+    return null
+  }
+}
+
+function looksLikeTwitter(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('@')) return true
+  const parsed = parseHttpUrl(trimmed)
+  if (parsed === null) return false
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '')
+  return host === 'x.com' || host === 'twitter.com'
+}
+
+function normalizeWebLink(endpoint: string): { href: string; label: string } | null {
+  const parsed = parseHttpUrl(endpoint)
+  if (parsed === null) return null
+  const path = parsed.pathname !== '/' ? parsed.pathname : ''
+  const label = `${parsed.hostname}${path}`
+  return { href: parsed.toString(), label }
+}
+
+function normalizeEmailLink(endpoint: string): { href: string; label: string; endpoint: string } | null {
+  const trimmed = endpoint.trim()
+  const withoutPrefix = trimmed.replace(/^mailto:/i, '')
+  if (!looksLikeEmail(withoutPrefix)) return null
+  const normalized = withoutPrefix.toLowerCase()
+  return {
+    href: `mailto:${normalized}`,
+    label: normalized,
+    endpoint: normalized,
+  }
+}
+
+function normalizeTwitterLink(endpoint: string): { href: string; label: string } | null {
+  const trimmed = endpoint.trim()
+  if (trimmed.startsWith('@')) {
+    const handle = trimmed.slice(1).trim()
+    if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) return null
+    return {
+      href: `https://x.com/${handle}`,
+      label: `@${handle}`,
+    }
+  }
+
+  const parsed = parseHttpUrl(trimmed)
+  if (parsed === null) return null
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '')
+  if (host !== 'x.com' && host !== 'twitter.com') return null
+
+  const path = parsed.pathname.replace(/^\/+|\/+$/g, '')
+  const firstSegment = path.split('/')[0]
+  if (!/^[A-Za-z0-9_]{1,15}$/.test(firstSegment)) return null
+
+  return {
+    href: `https://x.com/${firstSegment}`,
+    label: `@${firstSegment}`,
+  }
+}
+
+function classifyLinkKind(serviceName: string | null, endpoint: string): ResolvedMetadataLinkKind | null {
+  const lowerName = serviceName?.trim().toLowerCase() ?? ''
+
+  if (looksLikeEmail(endpoint) || EMAIL_SERVICE_NAMES.has(lowerName)) {
+    return 'email'
+  }
+  if (looksLikeTwitter(endpoint) || TWITTER_SERVICE_NAMES.has(lowerName)) {
+    return 'twitter'
+  }
+  if (WEB_SERVICE_NAMES.has(lowerName)) {
+    return 'web'
+  }
+  return null
+}
+
+function addResolvedMetadataLink(
+  output: ResolvedMetadataLinkDto[],
+  seen: Set<string>,
+  link: ResolvedMetadataLinkDto,
+): void {
+  const key = `${link.kind}:${link.href.toLowerCase()}`
+  if (seen.has(key)) return
+  seen.add(key)
+  output.push(link)
+}
+
+function buildResolvedMetadataLinks(agentMetadata: AgentMetadata): ResolvedMetadataLinkDto[] {
+  const links: ResolvedMetadataLinkDto[] = []
+  const seen = new Set<string>()
+
+  for (const entry of agentMetadata.serviceEntries ?? []) {
+    if (!isRecord(entry)) continue
+    const serviceName = nonEmptyString(entry.name)
+    const endpoint = nonEmptyString(entry.endpoint)
+    if (endpoint === null) continue
+
+    const kind = classifyLinkKind(serviceName, endpoint)
+    if (kind === null) continue
+
+    if (kind === 'web') {
+      const normalized = normalizeWebLink(endpoint)
+      if (normalized === null) continue
+      addResolvedMetadataLink(links, seen, {
+        kind,
+        label: normalized.label,
+        href: normalized.href,
+        endpoint,
+        serviceName,
+      })
+      continue
+    }
+
+    if (kind === 'email') {
+      const normalized = normalizeEmailLink(endpoint)
+      if (normalized === null) continue
+      addResolvedMetadataLink(links, seen, {
+        kind,
+        label: normalized.label,
+        href: normalized.href,
+        endpoint: normalized.endpoint,
+        serviceName,
+      })
+      continue
+    }
+
+    const normalized = normalizeTwitterLink(endpoint)
+    if (normalized === null) continue
+    addResolvedMetadataLink(links, seen, {
+      kind,
+      label: normalized.label,
+      href: normalized.href,
+      endpoint,
+      serviceName,
+    })
+  }
+
+  for (const email of agentMetadata.contactEmails ?? []) {
+    const normalized = normalizeEmailLink(email)
+    if (normalized === null) continue
+    addResolvedMetadataLink(links, seen, {
+      kind: 'email',
+      label: normalized.label,
+      href: normalized.href,
+      endpoint: normalized.endpoint,
+      serviceName: null,
+    })
+  }
+
+  for (const twitter of agentMetadata.contactTwitter ?? []) {
+    const normalized = normalizeTwitterLink(twitter)
+    if (normalized === null) continue
+    addResolvedMetadataLink(links, seen, {
+      kind: 'twitter',
+      label: normalized.label,
+      href: normalized.href,
+      endpoint: twitter,
+      serviceName: null,
+    })
+  }
+
+  const rawExternalUrl = isRecord(agentMetadata.rawMetadata)
+    ? nonEmptyString(agentMetadata.rawMetadata.external_url)
+    : null
+  if (rawExternalUrl !== null) {
+    const normalized = normalizeWebLink(rawExternalUrl)
+    if (normalized !== null) {
+      addResolvedMetadataLink(links, seen, {
+        kind: 'web',
+        label: normalized.label,
+        href: normalized.href,
+        endpoint: rawExternalUrl,
+        serviceName: null,
+      })
+    }
+  }
+
+  const priority: Record<ResolvedMetadataLinkKind, number> = {
+    web: 0,
+    twitter: 1,
+    email: 2,
+  }
+
+  links.sort((left, right) => {
+    const byKind = priority[left.kind] - priority[right.kind]
+    if (byKind !== 0) return byKind
+    return left.label.localeCompare(right.label)
+  })
+
+  return links
 }
 
 function toNumber(value: unknown): number {
@@ -384,6 +615,15 @@ export function createAgentsRouter(): Router {
 
       const tagAgentSet = new Set<string>(tagRows.map((row) => toStringValue(row._id)))
 
+      const agentIdNumbers = Array.from(registrationByAgent.keys())
+        .map((id) => parseInt(id, 10))
+        .filter((id) => Number.isFinite(id))
+      const metadataRows = await getAgentMetadataBatch(effectiveChainId, agentIdNumbers)
+      const metadataByAgent = new Map<string, AgentMetadata>()
+      for (const row of metadataRows) {
+        metadataByAgent.set(String(row.agentId), row)
+      }
+
       const now = Date.now()
       const registeredSinceThreshold = registeredSinceDays !== undefined
         ? now - registeredSinceDays * 24 * 60 * 60 * 1000
@@ -391,6 +631,7 @@ export function createAgentsRouter(): Router {
 
       let summaries: AgentSummaryDto[] = Array.from(registrationByAgent.entries()).map(([agentId, registration]) => {
         const args = registration.eventArgs as Record<string, unknown>
+        const metadata = metadataByAgent.get(agentId)
         const feedbackStats = feedbackStatsByAgent.get(agentId)
         const responseStats = responseStatsByAgent.get(agentId)
         const transferCount = transferCountByAgent.get(agentId) ?? 0
@@ -407,12 +648,17 @@ export function createAgentsRouter(): Router {
           ownerAddress: latestOwnerByAgent.get(agentId) ?? toLowerAddress(args['owner']),
           originalRegistrant: toLowerAddress(args['owner']),
           agentUri: latestUriByAgent.get(agentId) ?? toStringValue(args['agentURI']),
-          name: `Agent ${agentId}`,
-          description: '',
-          imageUrl: null,
+          name: metadata?.name ?? `Agent ${agentId}`,
+          description: metadata?.description ?? '',
+          imageUrl: metadata?.image ?? null,
           tags: [],
-          services: [],
-          x402Support: false,
+          services: metadata?.services ?? [],
+          x402Support: metadata?.x402Support ?? false,
+          type: metadata?.type ?? null,
+          active: metadata?.active ?? null,
+          erc8004Support: metadata?.erc8004Support ?? null,
+          registrations: metadata?.registrations ?? [],
+          supportedTrusts: metadata?.supportedTrusts ?? [],
           registrationTxHash: registration.txHash,
           registrationTimestamp,
           hasBeenTransferred: transferCount > 0,
@@ -445,7 +691,10 @@ export function createAgentsRouter(): Router {
       }
 
       if (protocol) {
-        summaries = summaries.filter((summary) => summary.services.includes(protocol))
+        const protocolLower = protocol.toLowerCase()
+        summaries = summaries.filter((summary) =>
+          summary.services.some((service) => service.toLowerCase() === protocolLower),
+        )
       }
 
       if (tag) {
@@ -546,6 +795,7 @@ export function createAgentsRouter(): Router {
           { blockNumber: -1, logIndex: -1 },
         ),
       ])
+      const agentMetadata = await getAgentMetadataByAgent(chainId, parsedAgentId)
 
       const args = registration.eventArgs as Record<string, unknown>
 
@@ -749,12 +999,17 @@ export function createAgentsRouter(): Router {
         ownerAddress,
         originalRegistrant: toLowerAddress(args['owner']),
         agentUri: currentUri,
-        name: `Agent ${agentId}`,
-        description: '',
-        imageUrl: null,
+        name: agentMetadata?.name ?? `Agent ${agentId}`,
+        description: agentMetadata?.description ?? '',
+        imageUrl: agentMetadata?.image ?? null,
         tags,
-        services: [],
-        x402Support: false,
+        services: agentMetadata?.services ?? [],
+        x402Support: agentMetadata?.x402Support ?? false,
+        type: agentMetadata?.type ?? null,
+        active: agentMetadata?.active ?? null,
+        erc8004Support: agentMetadata?.erc8004Support ?? null,
+        registrations: agentMetadata?.registrations ?? [],
+        supportedTrusts: agentMetadata?.supportedTrusts ?? [],
         registrationTxHash: registration.txHash,
         registrationTimestamp,
         hasBeenTransferred: transferCount > 0,
@@ -774,6 +1029,23 @@ export function createAgentsRouter(): Router {
 
       res.json({
         agent: agentSummary,
+        resolvedMetadata: agentMetadata
+          ? {
+            name: agentMetadata.name,
+            description: agentMetadata.description,
+            type: agentMetadata.type,
+            image: agentMetadata.image,
+            active: agentMetadata.active,
+            x402Support: agentMetadata.x402Support,
+            erc8004Support: agentMetadata.erc8004Support,
+            services: agentMetadata.services,
+            registrations: agentMetadata.registrations,
+            supportedTrusts: agentMetadata.supportedTrusts,
+            links: buildResolvedMetadataLinks(agentMetadata),
+            resolveStatus: agentMetadata.resolveStatus,
+            resolvedAt: agentMetadata.resolvedAt,
+          }
+          : null,
         payoutWallet,
         currentUri,
         reputationSummary: {

@@ -5,6 +5,7 @@ import {
   getResponseEdgeClient,
   getReviewEdgeClient,
 } from '../repositories/graph.repository'
+import { getAgentMetadataBatch } from '../repositories/agent-metadata.repository'
 
 export interface NetworkNodeDto {
   id?: string
@@ -288,6 +289,34 @@ export async function buildNetworkGraph(options: BuildNetworkGraphOptions): Prom
   for (const edge of edges) {
     ensureNode(nodeMap, edge.source)
     ensureNode(nodeMap, edge.target)
+  }
+
+  const agentNodeEntries = Array.from(nodeMap.entries()).filter(([, node]) =>
+    node.kind === 'agent' && typeof node.agentId === 'string' && node.agentId.length > 0,
+  )
+  const agentIds = agentNodeEntries
+    .map(([, node]) => Number(node.agentId))
+    .filter((id) => Number.isFinite(id))
+  if (agentIds.length > 0) {
+    const metadataRows = await getAgentMetadataBatch(options.chainId, agentIds)
+    const metadataByAgent = new Map<string, { name: string | null; image: string | null }>()
+    for (const row of metadataRows) {
+      metadataByAgent.set(String(row.agentId), {
+        name: row.name,
+        image: row.image,
+      })
+    }
+
+    for (const [nodeId, node] of agentNodeEntries) {
+      const metadata = metadataByAgent.get(node.agentId!)
+      if (!metadata) continue
+
+      nodeMap.set(nodeId, {
+        ...node,
+        name: metadata.name ?? node.name,
+        meta: metadata.image ? { ...(node.meta ?? {}), imageUrl: metadata.image } : node.meta,
+      })
+    }
   }
 
   const nodes = Array.from(nodeMap.values())

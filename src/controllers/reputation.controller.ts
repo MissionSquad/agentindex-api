@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import type { Document } from 'mongodb'
 import { getEventFactClient } from '../repositories/event.repository'
+import { getAgentMetadataBatch } from '../repositories/agent-metadata.repository'
 import { parsePagination } from './helpers'
 import { env } from '../env'
 import type { EventFact } from '../types/mongo'
@@ -249,6 +250,27 @@ function addRegexFilter(target: Document, path: string, value: string | undefine
   target[path] = { $regex: value, $options: 'i' }
 }
 
+async function buildAgentNamesMap(chainId: number, entries: Array<{ agentId: string }>): Promise<Record<string, string>> {
+  const uniqueAgentIds = Array.from(
+    new Set(
+      entries
+        .map((entry) => Number(entry.agentId))
+        .filter((id) => Number.isFinite(id)),
+    ),
+  )
+
+  if (uniqueAgentIds.length === 0) return {}
+
+  const metadataRows = await getAgentMetadataBatch(chainId, uniqueAgentIds)
+  const agentNames: Record<string, string> = {}
+  for (const row of metadataRows) {
+    if (row.name) {
+      agentNames[String(row.agentId)] = row.name
+    }
+  }
+  return agentNames
+}
+
 export function createReputationRouter(): Router {
   const router = Router()
 
@@ -372,6 +394,7 @@ export function createReputationRouter(): Router {
       const recentResponses = recentResponseRows.map((row) =>
         mapResponseRow(effectiveChainId, row)
       )
+      const agentNames = await buildAgentNamesMap(effectiveChainId, [...recentFeedback, ...recentResponses])
 
       const tagDistribution: Record<string, number> = {}
       for (const row of tagDistributionRows) {
@@ -411,6 +434,7 @@ export function createReputationRouter(): Router {
         },
         recentFeedback: paginatedResult(recentFeedback, page, limit, totalFilteredFeedback),
         recentResponses: paginatedResult(recentResponses, page, limit, totalFilteredResponses),
+        agentNames,
       })
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch reputation data' })
@@ -533,6 +557,7 @@ export function createReputationRouter(): Router {
       const recentResponses = recentResponseRows.map((row) =>
         mapResponseRow(chainId, row)
       )
+      const agentNames = await buildAgentNamesMap(chainId, [...recentFeedback, ...recentResponses])
 
       const tagDistribution: Record<string, number> = {}
       for (const row of tagDistributionRows) {
@@ -570,6 +595,7 @@ export function createReputationRouter(): Router {
         },
         recentFeedback: paginatedResult(recentFeedback, page, limit, totalFilteredFeedback),
         recentResponses: paginatedResult(recentResponses, page, limit, totalFilteredResponses),
+        agentNames,
       })
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch agent reputation' })

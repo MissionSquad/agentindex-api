@@ -1,33 +1,51 @@
+import { gunzipSync } from 'node:zlib'
+import { env } from '../env'
 import { log } from '../utils/logger'
+import { sleep } from '../utils/retry'
 
 /**
  * Fetches off-chain content from agentURI, feedbackURI, or responseURI.
- * Supports data: URIs (base64, gzip+base64), ipfs://, and https://.
+ * Supports raw JSON payloads, data: URIs (base64, gzip+base64), ipfs://, and https://.
  */
 export async function fetchOffchainContent(uri: string): Promise<Buffer | null> {
   if (!uri) return null
 
   try {
-    if (uri.startsWith('data:')) {
-      return decodeDataUri(uri)
+    const trimmed = uri.trim()
+    if (trimmed.length === 0) return null
+
+    if (looksLikeInlineJson(trimmed)) {
+      return Buffer.from(trimmed, 'utf-8')
     }
 
-    if (uri.startsWith('ipfs://')) {
-      const cid = uri.slice(7)
-      const gatewayUrl = `https://ipfs.io/ipfs/${cid}`
-      return await fetchHttpContent(gatewayUrl)
+    if (trimmed.startsWith('data:')) {
+      return decodeDataUri(trimmed)
     }
 
-    if (uri.startsWith('http://') || uri.startsWith('https://')) {
-      return await fetchHttpContent(uri)
+    if (trimmed.startsWith('ipfs://')) {
+      return await fetchIpfsWithFallback(trimmed)
     }
 
-    log({ level: 'warn', msg: `Unsupported URI scheme: ${uri.slice(0, 30)}` })
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return await fetchHttpContentWithRetry(
+        trimmed,
+        env.METADATA_HTTP_TIMEOUT_MS,
+        env.METADATA_FETCH_RETRIES,
+        env.METADATA_RETRY_BASE_DELAY_MS,
+        env.METADATA_RETRY_MAX_DELAY_MS,
+      )
+    }
+
+    log({ level: 'warn', msg: `Unsupported URI scheme: ${trimmed.slice(0, 30)}` })
     return null
   } catch (error) {
     log({ level: 'warn', msg: `Failed to fetch off-chain content: ${uri.slice(0, 80)}`, error })
     return null
   }
+}
+
+function looksLikeInlineJson(value: string): boolean {
+  return value.startsWith('{') || value.startsWith('[')
 }
 
 function decodeDataUri(uri: string): Buffer | null {
@@ -36,23 +54,109 @@ function decodeDataUri(uri: string): Buffer | null {
   const commaIndex = uri.indexOf(',')
   if (commaIndex === -1) return null
 
+  const header = uri.slice(0, commaIndex).toLowerCase()
   const base64Data = uri.slice(commaIndex + 1)
-  return Buffer.from(base64Data, 'base64')
-}
+  const raw = Buffer.from(base64Data, 'base64')
 
-async function fetchHttpContent(url: string): Promise<Buffer | null> {
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(15000),
-    headers: { 'User-Agent': 'ERC8004-Scanner/1.0' },
-  })
-
-  if (!response.ok) {
-    log({ level: 'warn', msg: `HTTP ${response.status} fetching ${url}` })
-    return null
+  if (header.includes('enc=gzip')) {
+    try {
+      return gunzipSync(raw)
+    } catch {
+      return null
+    }
   }
 
-  const arrayBuffer = await response.arrayBuffer()
-  return Buffer.from(arrayBuffer)
+  return raw
+}
+
+function ipfsGatewayCandidates(ipfsUri: string, gateways: string[]): string[] {
+  const cidPath = ipfsUri.slice(7).replace(/^\/+/, '')
+  return gateways.map((base) => `${base.replace(/\/$/, '')}/${cidPath}`)
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+function backoffDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  const exponential = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, Math.max(0, attempt - 1)))
+  const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(exponential / 2)))
+  return Math.min(maxDelayMs, exponential + jitter)
+}
+
+async function fetchHttpContentWithRetry(
+  url: string,
+  timeoutMs: number,
+  retries: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+): Promise<Buffer | null> {
+  const maxAttempts = Math.max(1, retries + 1)
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const start = Date.now()
+
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: { 'User-Agent': 'ERC8004-Scanner/1.0' },
+      })
+
+      if (response.ok) {
+        const arrayBuffer = await response.arrayBuffer()
+        return Buffer.from(arrayBuffer)
+      }
+
+      const retryable = isRetryableStatus(response.status)
+      const elapsedMs = Date.now() - start
+      log({
+        level: retryable ? 'warn' : 'info',
+        msg: `HTTP ${response.status} fetching ${url} (attempt ${attempt}/${maxAttempts}, ${elapsedMs}ms)`,
+      })
+
+      if (!retryable || attempt >= maxAttempts) {
+        return null
+      }
+    } catch (error) {
+      const elapsedMs = Date.now() - start
+      const name = error instanceof Error ? error.name : 'UnknownError'
+      log({
+        level: 'warn',
+        msg: `Fetch error (${name}) for ${url} (attempt ${attempt}/${maxAttempts}, ${elapsedMs}ms)`,
+      })
+
+      if (attempt >= maxAttempts) {
+        return null
+      }
+    }
+
+    await sleep(backoffDelayMs(attempt, baseDelayMs, maxDelayMs))
+  }
+
+  return null
+}
+
+async function fetchIpfsWithFallback(uri: string): Promise<Buffer | null> {
+  const candidates = ipfsGatewayCandidates(uri, env.IPFS_GATEWAY_URLS)
+
+  for (const candidateUrl of candidates) {
+    const result = await fetchHttpContentWithRetry(
+      candidateUrl,
+      env.METADATA_IPFS_TIMEOUT_MS,
+      env.METADATA_FETCH_RETRIES,
+      env.METADATA_RETRY_BASE_DELAY_MS,
+      env.METADATA_RETRY_MAX_DELAY_MS,
+    )
+    if (result !== null) {
+      return result
+    }
+  }
+
+  return null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -60,7 +164,8 @@ async function fetchHttpContent(url: string): Promise<Buffer | null> {
  */
 export function parseRegistrationJson(content: Buffer): Record<string, unknown> | null {
   try {
-    return JSON.parse(content.toString('utf-8'))
+    const parsed = JSON.parse(content.toString('utf-8')) as unknown
+    return isRecord(parsed) ? parsed : null
   } catch {
     return null
   }

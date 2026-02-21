@@ -208,7 +208,7 @@ export class WsSubscriptionService {
       }
 
       // Process the current head block
-      await this.scanner.processBlock(headNumber)
+      await this.scanner.processBlock(headNumber, { awaitMetadataResolution: true })
     } catch (error) {
       log({ level: 'error', msg: `Failed to handle new head ${headNumber}`, error })
     }

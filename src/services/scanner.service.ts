@@ -16,6 +16,7 @@ import { upsertTransactionBatch } from '../repositories/transaction.repository'
 import { upsertEventBatch } from '../repositories/event.repository'
 import { upsertGraphEdgeBatch } from '../repositories/graph.repository'
 import { upsertChainSyncState } from '../repositories/chain-state.repository'
+import { resolveAgentMetadataFromEvents } from './agent-metadata.service'
 import {
   isPersistableDecodedTransaction,
   isFormattedTransactionResponse,
@@ -34,6 +35,10 @@ interface CandidateProcessResult {
   txFact: TransactionFact
   callFact: CallFact | null
   eventFacts: EventFact[]
+}
+
+interface ProcessBlockOptions {
+  awaitMetadataResolution?: boolean
 }
 
 export class ScannerService {
@@ -87,7 +92,7 @@ export class ScannerService {
    * Process a single block: filter candidates, decode, persist.
    * Returns true if any ERC-8004 transactions were found.
    */
-  async processBlock(blockNumber: number): Promise<boolean> {
+  async processBlock(blockNumber: number, options?: ProcessBlockOptions): Promise<boolean> {
     const decoder = this.getDecoder()
 
     // Step 1: Get raw block for lightweight candidate filtering
@@ -169,6 +174,15 @@ export class ScannerService {
     const edges = await deriveGraphEdges(this.chainId, allEventFacts)
     await upsertGraphEdgeBatch(edges.reviews, edges.registrants, edges.agentReviews, edges.responses)
 
+    const shouldAwaitMetadataResolution = options?.awaitMetadataResolution ?? false
+    if (shouldAwaitMetadataResolution) {
+      await resolveAgentMetadataFromEvents(this.chainId, allEventFacts)
+    } else {
+      void resolveAgentMetadataFromEvents(this.chainId, allEventFacts).catch((error) => {
+        log({ level: 'error', msg: 'Background metadata resolution failed', error })
+      })
+    }
+
     // Step 5: Update sync checkpoint
     await this.updateSyncState(blockNumber, blockHash)
 
@@ -226,6 +240,7 @@ export class ScannerService {
 
       const edges = await deriveGraphEdges(this.chainId, eventFacts, txHash)
       await upsertGraphEdgeBatch(edges.reviews, edges.registrants, edges.agentReviews, edges.responses)
+      await resolveAgentMetadataFromEvents(this.chainId, eventFacts)
     } catch (error) {
       log({ level: 'error', msg: `Failed to process transaction ${txHash}`, error })
     }

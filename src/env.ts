@@ -34,6 +34,31 @@ export const env = {
   WS_RECONNECT_BASE_DELAY_MS: parseInt(process.env.WS_RECONNECT_BASE_DELAY_MS || '1000', 10),
   WS_RECONNECT_MAX_DELAY_MS: parseInt(process.env.WS_RECONNECT_MAX_DELAY_MS || '30000', 10),
 
+  // Metadata resolution
+  IPFS_GATEWAY_URLS: (
+    process.env.IPFS_GATEWAY_URLS
+    || 'https://ipfs.io/ipfs/|https://cloudflare-ipfs.com/ipfs/|https://dweb.link/ipfs/'
+  )
+    .split('|')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+  METADATA_HTTP_TIMEOUT_MS: parseInt(process.env.METADATA_HTTP_TIMEOUT_MS || '10000', 10),
+  METADATA_IPFS_TIMEOUT_MS: parseInt(process.env.METADATA_IPFS_TIMEOUT_MS || '30000', 10),
+  METADATA_FETCH_RETRIES: parseInt(process.env.METADATA_FETCH_RETRIES || '2', 10),
+  METADATA_RETRY_BASE_DELAY_MS: parseInt(process.env.METADATA_RETRY_BASE_DELAY_MS || '400', 10),
+  METADATA_RETRY_MAX_DELAY_MS: parseInt(process.env.METADATA_RETRY_MAX_DELAY_MS || '5000', 10),
+  METADATA_FETCH_CONCURRENCY: parseInt(process.env.METADATA_FETCH_CONCURRENCY || '8', 10),
+  METADATA_IGNORED_URI_PREFIXES: (process.env.METADATA_IGNORED_URI_PREFIXES || 'https://ag0.xyz')
+    .split('|')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+  METADATA_RE_RESOLVE_INTERVAL_MS: parseInt(process.env.METADATA_RE_RESOLVE_INTERVAL_MS || '3600000', 10),
+  METADATA_RE_RESOLVE_MAX_AGE_MS: parseInt(process.env.METADATA_RE_RESOLVE_MAX_AGE_MS || '86400000', 10),
+  METADATA_RE_RESOLVE_BATCH_SIZE: parseInt(process.env.METADATA_RE_RESOLVE_BATCH_SIZE || '50', 10),
+  METADATA_RETRY_INTERVAL_MS: parseInt(process.env.METADATA_RETRY_INTERVAL_MS || '900000', 10),
+  METADATA_RETRY_MAX_AGE_MS: parseInt(process.env.METADATA_RETRY_MAX_AGE_MS || '900000', 10),
+  METADATA_RETRY_BATCH_SIZE: parseInt(process.env.METADATA_RETRY_BATCH_SIZE || '20', 10),
+
   // CORS
   ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split('|').map((u) => u.trim()),
 

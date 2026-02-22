@@ -375,6 +375,8 @@ async function startServer(): Promise<void> {
         scanner,
         baseDelayMs: env.WS_RECONNECT_BASE_DELAY_MS,
         maxDelayMs: env.WS_RECONNECT_MAX_DELAY_MS,
+        failureWindowMs: env.SCANNER_FAILURE_WINDOW_MS,
+        cooldownMs: env.SCANNER_COOLDOWN_MS,
         onEvent: (type, data) => {
           broadcastSSE(type, data)
         },

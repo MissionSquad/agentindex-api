@@ -222,33 +222,29 @@ export class ScannerService {
   private async processTransactionInternal(txHash: string): Promise<void> {
     const decoder = this.getDecoder()
 
-    try {
-      const decodedResult = await decoder.getTransaction(txHash, true)
+    const decodedResult = await decoder.getTransaction(txHash, true)
 
-      if (!isPersistableDecodedTransaction(decodedResult)) {
-        if (!isFormattedTransactionResponse(decodedResult)) {
-          log({
-            level: 'warn',
-            msg: `Skipping tx ${txHash}: decoder returned raw transaction`,
-          })
-        }
-        return
+    if (!isPersistableDecodedTransaction(decodedResult)) {
+      if (!isFormattedTransactionResponse(decodedResult)) {
+        log({
+          level: 'warn',
+          msg: `Skipping tx ${txHash}: decoder returned raw transaction`,
+        })
       }
-
-      const txFact = mapTransactionFact(this.chainId, decodedResult)
-      const callFact = mapCallFact(this.chainId, decodedResult)
-      const eventFacts = mapEventFacts(this.chainId, decodedResult)
-
-      await upsertTransactionBatch([txFact], callFact ? [callFact] : [])
-      await upsertEventBatch(eventFacts)
-      this.emitPersistedEvents(eventFacts)
-
-      const edges = await deriveGraphEdges(this.chainId, eventFacts, txHash)
-      await upsertGraphEdgeBatch(edges.reviews, edges.registrants, edges.agentReviews, edges.responses)
-      await resolveAgentMetadataFromEvents(this.chainId, eventFacts)
-    } catch (error) {
-      log({ level: 'error', msg: `Failed to process transaction ${txHash}`, error })
+      return
     }
+
+    const txFact = mapTransactionFact(this.chainId, decodedResult)
+    const callFact = mapCallFact(this.chainId, decodedResult)
+    const eventFacts = mapEventFacts(this.chainId, decodedResult)
+
+    await upsertTransactionBatch([txFact], callFact ? [callFact] : [])
+    await upsertEventBatch(eventFacts)
+    this.emitPersistedEvents(eventFacts)
+
+    const edges = await deriveGraphEdges(this.chainId, eventFacts, txHash)
+    await upsertGraphEdgeBatch(edges.reviews, edges.registrants, edges.agentReviews, edges.responses)
+    await resolveAgentMetadataFromEvents(this.chainId, eventFacts)
   }
 
   private async updateSyncState(blockNumber: number, blockHash: string): Promise<void> {

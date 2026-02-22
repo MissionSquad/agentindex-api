@@ -34,6 +34,8 @@ export const env = {
   SCANNER_ENABLED: /true/i.test(process.env.SCANNER_ENABLED ?? 'true'),
   CATCHUP_BATCH_SIZE: parseInt(process.env.CATCHUP_BATCH_SIZE || '10', 10),
   SCANNER_TX_CONCURRENCY: parseInt(process.env.SCANNER_TX_CONCURRENCY || '8', 10),
+  SCANNER_FAILURE_WINDOW_MS: parseInt(process.env.SCANNER_FAILURE_WINDOW_MS || '300000', 10),
+  SCANNER_COOLDOWN_MS: parseInt(process.env.SCANNER_COOLDOWN_MS || '60000', 10),
   WS_RECONNECT_BASE_DELAY_MS: parseInt(process.env.WS_RECONNECT_BASE_DELAY_MS || '1000', 10),
   WS_RECONNECT_MAX_DELAY_MS: parseInt(process.env.WS_RECONNECT_MAX_DELAY_MS || '30000', 10),
 

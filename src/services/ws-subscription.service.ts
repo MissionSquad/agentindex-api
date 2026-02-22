@@ -12,8 +12,12 @@ interface WsSubscriptionOpts {
   scanner: ScannerService
   baseDelayMs: number
   maxDelayMs: number
+  failureWindowMs: number
+  cooldownMs: number
   onEvent?: (type: string, data: Record<string, unknown>) => void
 }
+
+const COOLDOWN_SKIP_LOG_INTERVAL_MS = 10_000
 
 /**
  * WebSocket subscription service for real-time ERC-8004 event notifications.
@@ -28,6 +32,8 @@ export class WsSubscriptionService {
   private readonly scanner: ScannerService
   private readonly baseDelayMs: number
   private readonly maxDelayMs: number
+  private readonly failureWindowMs: number
+  private readonly cooldownMs: number
   private readonly onEvent?: (type: string, data: Record<string, unknown>) => void
   private reconnectAttempt: number = 0
   private logsSubId: string | null = null
@@ -36,6 +42,10 @@ export class WsSubscriptionService {
   private pendingRequests = new Map<number, (result: unknown) => void>()
   private nextId: number = 1
   private notificationQueue: Promise<void> = Promise.resolve()
+  private failureWindowStartAtMs: number | null = null
+  private consecutiveFailuresInWindow: number = 0
+  private cooldownUntilMs: number = 0
+  private lastCooldownSkipLogAtMs: number = 0
 
   constructor(opts: WsSubscriptionOpts) {
     this.wsUrl = opts.wsUrl
@@ -43,6 +53,8 @@ export class WsSubscriptionService {
     this.scanner = opts.scanner
     this.baseDelayMs = opts.baseDelayMs
     this.maxDelayMs = opts.maxDelayMs
+    this.failureWindowMs = Number.isFinite(opts.failureWindowMs) ? Math.max(0, opts.failureWindowMs) : 0
+    this.cooldownMs = Number.isFinite(opts.cooldownMs) ? Math.max(0, opts.cooldownMs) : 0
     this.onEvent = opts.onEvent
   }
 
@@ -177,9 +189,75 @@ export class WsSubscriptionService {
       })
   }
 
+  private shouldPauseProcessing(context: string): boolean {
+    if (this.cooldownUntilMs <= 0) return false
+
+    const now = Date.now()
+    if (now >= this.cooldownUntilMs) {
+      this.cooldownUntilMs = 0
+      this.lastCooldownSkipLogAtMs = 0
+      log({ level: 'info', msg: 'Scanner RPC cooldown ended; resuming processing' })
+      return false
+    }
+
+    if (now - this.lastCooldownSkipLogAtMs >= COOLDOWN_SKIP_LOG_INTERVAL_MS) {
+      const remainingMs = this.cooldownUntilMs - now
+      log({
+        level: 'warn',
+        msg: `Skipping ${context} while scanner RPC cooldown is active (${Math.ceil(remainingMs / 1000)}s remaining)`,
+      })
+      this.lastCooldownSkipLogAtMs = now
+    }
+
+    return true
+  }
+
+  private resetFailureWindow(): void {
+    this.failureWindowStartAtMs = null
+    this.consecutiveFailuresInWindow = 0
+  }
+
+  private onRpcSuccess(): void {
+    if (this.failureWindowStartAtMs === null) return
+    this.resetFailureWindow()
+  }
+
+  private onRpcFailure(context: string): void {
+    if (this.failureWindowMs <= 0 || this.cooldownMs <= 0) return
+
+    const now = Date.now()
+    if (this.failureWindowStartAtMs === null) {
+      this.failureWindowStartAtMs = now
+      this.consecutiveFailuresInWindow = 1
+      return
+    }
+
+    this.consecutiveFailuresInWindow += 1
+    const elapsedMs = now - this.failureWindowStartAtMs
+    if (elapsedMs < this.failureWindowMs) return
+
+    this.cooldownUntilMs = now + this.cooldownMs
+    this.lastCooldownSkipLogAtMs = 0
+
+    log({
+      level: 'warn',
+      msg: [
+        `Entering scanner RPC cooldown for ${this.cooldownMs}ms`,
+        `after ${this.consecutiveFailuresInWindow} failures over ${elapsedMs}ms`,
+        `while handling ${context}`,
+      ].join(' '),
+    })
+
+    this.resetFailureWindow()
+  }
+
   private async handleLogNotification(logData: Record<string, unknown>): Promise<void> {
     const txHash = logData.transactionHash as string | undefined
     if (!txHash) return
+
+    if (this.shouldPauseProcessing(`log tx ${txHash}`)) {
+      return
+    }
 
     log({ level: 'debug', msg: `Log notification: tx=${txHash}` })
 
@@ -187,6 +265,7 @@ export class WsSubscriptionService {
       await this.scanner.processTransaction(txHash)
       this.onEvent?.('transaction', { chainId: this.chainId, txHash })
     } catch (error) {
+      this.onRpcFailure(`log tx ${txHash}`)
       log({ level: 'error', msg: `Failed to process log notification for ${txHash}`, error })
     }
   }
@@ -196,6 +275,10 @@ export class WsSubscriptionService {
     if (!numberHex) return
 
     const headNumber = parseInt(numberHex, 16)
+    if (this.shouldPauseProcessing(`new head ${headNumber}`)) {
+      return
+    }
+
     log({ level: 'debug', msg: `New head: ${headNumber}` })
 
     try {
@@ -209,8 +292,10 @@ export class WsSubscriptionService {
 
       // Process the current head block
       await this.scanner.processBlock(headNumber, { awaitMetadataResolution: true })
+      this.onRpcSuccess()
       this.onEvent?.('block_processed', { chainId: this.chainId, blockNumber: headNumber })
     } catch (error) {
+      this.onRpcFailure(`new head ${headNumber}`)
       log({ level: 'error', msg: `Failed to handle new head ${headNumber}`, error })
     }
   }

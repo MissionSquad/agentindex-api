@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/agentindex-api",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "AgentIndex blockchain scanner API",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -10,6 +10,7 @@
     "build": "tsc",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "test": "vitest run",
+    "test:x402": "bash scripts/test-x402-payments.sh",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "scrape:uris": "ts-node-dev --transpile-only scripts/scrape-agent-uris.ts",

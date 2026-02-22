@@ -185,7 +185,7 @@ export class WsSubscriptionService {
 
     try {
       await this.scanner.processTransaction(txHash)
-      this.onEvent?.('transaction', { txHash })
+      this.onEvent?.('transaction', { chainId: this.chainId, txHash })
     } catch (error) {
       log({ level: 'error', msg: `Failed to process log notification for ${txHash}`, error })
     }
@@ -209,6 +209,7 @@ export class WsSubscriptionService {
 
       // Process the current head block
       await this.scanner.processBlock(headNumber, { awaitMetadataResolution: true })
+      this.onEvent?.('block_processed', { chainId: this.chainId, blockNumber: headNumber })
     } catch (error) {
       log({ level: 'error', msg: `Failed to handle new head ${headNumber}`, error })
     }

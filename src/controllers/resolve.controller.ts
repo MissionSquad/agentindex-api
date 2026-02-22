@@ -9,6 +9,13 @@ const ALLOWED_HTTP_PROTOCOLS = ['http:', 'https:']
 const IMAGE_CONTENT_TYPE_PREFIX = 'image/'
 const HTTP_IMAGE_CACHE_SECONDS = 86400      // 24 hours
 const IPFS_IMAGE_CACHE_SECONDS = 31536000   // 1 year (content-addressed, immutable)
+const HTTP_IMAGE_ACCEPT_HEADER = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+const HTTP_IMAGE_USER_AGENT = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+  'AppleWebKit/537.36 (KHTML, like Gecko)',
+  'Chrome/122.0.0.0',
+  'Safari/537.36',
+].join(' ')
 
 /**
  * Validate that the provided string is a well-formed URL with one of the given protocols.
@@ -20,6 +27,19 @@ function parseUrl(raw: string): URL | null {
   } catch {
     return null
   }
+}
+
+function stringifyFetchError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return 'Unknown fetch error'
+  }
+
+  const cause = typeof (err as { cause?: unknown }).cause === 'object'
+    ? (err as { cause?: { message?: unknown } }).cause
+    : undefined
+  const causeMessage = cause && typeof cause.message === 'string' ? cause.message : null
+
+  return causeMessage ? `${err.message} (${causeMessage})` : err.message
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +227,11 @@ async function proxyHttpImage(url: string, res: Response): Promise<void> {
   try {
     response = await fetch(url, {
       signal: controller.signal,
-      headers: { Accept: 'image/*' },
+      headers: {
+        Accept: HTTP_IMAGE_ACCEPT_HEADER,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': HTTP_IMAGE_USER_AGENT,
+      },
     })
   } catch (err) {
     clearTimeout(timer)
@@ -217,7 +241,7 @@ async function proxyHttpImage(url: string, res: Response): Promise<void> {
       return
     }
 
-    const message = err instanceof Error ? err.message : 'Unknown fetch error'
+    const message = stringifyFetchError(err)
     log({ level: 'warn', msg: `Image proxy fetch failed: ${message}`, meta: { url } })
     res.status(502).json({ error: `Upstream image fetch failed: ${message}` })
     return
@@ -226,7 +250,9 @@ async function proxyHttpImage(url: string, res: Response): Promise<void> {
   }
 
   if (!response.ok) {
-    res.status(502).json({ error: `Upstream returned HTTP ${response.status}` })
+    res.status(502).json({
+      error: `Upstream returned HTTP ${response.status} ${response.statusText}`,
+    })
     return
   }
 

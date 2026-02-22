@@ -29,6 +29,7 @@ interface ScannerOptions {
   rpcUrl: string
   abiDirectory?: string
   txConcurrency?: number
+  onEventFactsPersisted?: (eventFacts: EventFact[]) => void
 }
 
 interface CandidateProcessResult {
@@ -48,6 +49,7 @@ export class ScannerService {
   private readonly rpcUrl: string
   private readonly abiDirectory: string | undefined
   private readonly txConcurrency: number
+  private readonly onEventFactsPersisted?: (eventFacts: EventFact[]) => void
   private readonly inFlightTx = new Map<string, Promise<void>>()
 
   constructor(opts: ScannerOptions) {
@@ -56,6 +58,7 @@ export class ScannerService {
     this.rpcUrl = opts.rpcUrl
     this.abiDirectory = opts.abiDirectory
     this.txConcurrency = Math.max(1, opts.txConcurrency ?? 8)
+    this.onEventFactsPersisted = opts.onEventFactsPersisted
   }
 
   async initialize(): Promise<void> {
@@ -171,6 +174,7 @@ export class ScannerService {
     // Step 4: Persist all documents with idempotent upserts
     await upsertTransactionBatch(allTxFacts, allCallFacts)
     await upsertEventBatch(allEventFacts)
+    this.emitPersistedEvents(allEventFacts)
     const edges = await deriveGraphEdges(this.chainId, allEventFacts)
     await upsertGraphEdgeBatch(edges.reviews, edges.registrants, edges.agentReviews, edges.responses)
 
@@ -237,6 +241,7 @@ export class ScannerService {
 
       await upsertTransactionBatch([txFact], callFact ? [callFact] : [])
       await upsertEventBatch(eventFacts)
+      this.emitPersistedEvents(eventFacts)
 
       const edges = await deriveGraphEdges(this.chainId, eventFacts, txHash)
       await upsertGraphEdgeBatch(edges.reviews, edges.registrants, edges.agentReviews, edges.responses)
@@ -254,6 +259,16 @@ export class ScannerService {
       lastSyncedBlockHash: blockHash,
       updatedAt: Date.now(),
     })
+  }
+
+  private emitPersistedEvents(eventFacts: EventFact[]): void {
+    if (eventFacts.length === 0 || !this.onEventFactsPersisted) return
+
+    try {
+      this.onEventFactsPersisted(eventFacts)
+    } catch (error) {
+      log({ level: 'error', msg: 'Scanner persisted-event callback failed', error })
+    }
   }
 
   private async mapWithConcurrency<TInput, TOutput>(

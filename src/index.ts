@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { createX402ProxySdk } from '@missionsquad/x402-proxy'
+import { WebSocketServer, WebSocket } from 'ws'
 import { env } from './env'
 import { log } from './utils/logger'
 import { MongoPoolManager } from './utils/mongoPoolManager'
@@ -21,6 +22,9 @@ import { createNetworkRouter } from './controllers/network.controller'
 import { createSearchRouter } from './controllers/search.controller'
 import { createResolveRouter } from './controllers/resolve.controller'
 import { setSSEHeaders } from './controllers/helpers'
+import { toDashboardActivityItems } from './services/dashboard-activity.service'
+import type { DashboardActivityStreamMessage } from './types/api'
+import type { EventFact } from './types/mongo'
 import type { Express, Request, Response, NextFunction } from 'express'
 
 const app = express()
@@ -94,6 +98,14 @@ let x402HttpServer: ReturnType<typeof app.listen> | null = null
 let reResolveTimer: ReturnType<typeof setInterval> | null = null
 let retryTimer: ReturnType<typeof setInterval> | null = null
 const sseClients: Set<Response> = new Set()
+let dashboardWsServer: WebSocketServer | null = null
+let dashboardWsHeartbeatTimer: ReturnType<typeof setInterval> | null = null
+const dashboardWsClients: Set<WebSocket> = new Set()
+const dashboardWsLastPongAt: Map<WebSocket, number> = new Map()
+
+const DASHBOARD_ACTIVITY_WS_PATH = '/v1/ws/dashboard-activity'
+const DASHBOARD_WS_PING_INTERVAL_MS = 25_000
+const DASHBOARD_WS_STALE_TIMEOUT_MS = 60_000
 
 // --- x402 Routes ---
 if (x402App) {
@@ -160,6 +172,125 @@ function broadcastSSE(type: string, data: Record<string, unknown>): void {
   }
 }
 
+function removeDashboardWsClient(client: WebSocket): void {
+  dashboardWsClients.delete(client)
+  dashboardWsLastPongAt.delete(client)
+}
+
+function broadcastDashboardWs(message: DashboardActivityStreamMessage): void {
+  const payload = JSON.stringify(message)
+  for (const client of dashboardWsClients) {
+    if (client.readyState !== WebSocket.OPEN) {
+      removeDashboardWsClient(client)
+      continue
+    }
+
+    try {
+      client.send(payload)
+    } catch (error) {
+      log({ level: 'warn', msg: 'Failed to send dashboard websocket message', error })
+      removeDashboardWsClient(client)
+      client.terminate()
+    }
+  }
+}
+
+async function publishDashboardActivityFromPersistedEventFacts(eventFacts: EventFact[]): Promise<void> {
+  const activityItems = await toDashboardActivityItems(eventFacts)
+  for (const item of activityItems) {
+    broadcastDashboardWs({
+      type: 'activity',
+      item,
+    })
+  }
+}
+
+function startDashboardWsServer(server: ReturnType<typeof app.listen>): void {
+  dashboardWsServer = new WebSocketServer({
+    server,
+    path: DASHBOARD_ACTIVITY_WS_PATH,
+  })
+
+  dashboardWsServer.on('connection', (client) => {
+    dashboardWsClients.add(client)
+    dashboardWsLastPongAt.set(client, Date.now())
+
+    client.on('pong', () => {
+      dashboardWsLastPongAt.set(client, Date.now())
+    })
+
+    client.on('close', () => {
+      removeDashboardWsClient(client)
+    })
+
+    client.on('error', (error) => {
+      log({ level: 'warn', msg: 'Dashboard websocket client error', error })
+      removeDashboardWsClient(client)
+    })
+
+    const connectedPayload: DashboardActivityStreamMessage = {
+      type: 'connected',
+      timestamp: Date.now(),
+    }
+
+    try {
+      client.send(JSON.stringify(connectedPayload))
+    } catch (error) {
+      log({ level: 'warn', msg: 'Failed to send dashboard websocket connected payload', error })
+      removeDashboardWsClient(client)
+      client.terminate()
+    }
+  })
+
+  dashboardWsHeartbeatTimer = setInterval(() => {
+    const now = Date.now()
+
+    for (const client of dashboardWsClients) {
+      const lastPongAt = dashboardWsLastPongAt.get(client) ?? 0
+      if (now - lastPongAt > DASHBOARD_WS_STALE_TIMEOUT_MS) {
+        removeDashboardWsClient(client)
+        client.terminate()
+        continue
+      }
+
+      if (client.readyState !== WebSocket.OPEN) {
+        removeDashboardWsClient(client)
+        continue
+      }
+
+      try {
+        client.ping()
+      } catch (error) {
+        log({ level: 'warn', msg: 'Failed to ping dashboard websocket client', error })
+        removeDashboardWsClient(client)
+        client.terminate()
+      }
+    }
+  }, DASHBOARD_WS_PING_INTERVAL_MS)
+}
+
+async function stopDashboardWsServer(): Promise<void> {
+  if (dashboardWsHeartbeatTimer) {
+    clearInterval(dashboardWsHeartbeatTimer)
+    dashboardWsHeartbeatTimer = null
+  }
+
+  for (const client of dashboardWsClients) {
+    removeDashboardWsClient(client)
+    client.terminate()
+  }
+
+  if (!dashboardWsServer) return
+
+  const wsServer = dashboardWsServer
+  dashboardWsServer = null
+  await new Promise<void>((resolve) => {
+    wsServer.close(() => {
+      resolve()
+    })
+  })
+}
+
 // --- Startup ---
 async function startServer(): Promise<void> {
   // 1. Initialize MongoDB
@@ -181,6 +312,7 @@ async function startServer(): Promise<void> {
     log({ level: 'info', msg: `CORS allowed origins: ${env.ALLOWED_ORIGINS.join(', ')}` })
     log({ level: 'info', msg: `Scanner enabled: ${env.SCANNER_ENABLED}` })
   })
+  startDashboardWsServer(httpServer)
 
   // 3. Start x402 proxy server on a separate port when enabled
   if (x402App) {
@@ -205,6 +337,11 @@ async function startServer(): Promise<void> {
         rpcUrl: chainConfig.rpcUrl,
         abiDirectory: env.ABI_DIRECTORY,
         txConcurrency: env.SCANNER_TX_CONCURRENCY,
+        onEventFactsPersisted: (eventFacts) => {
+          void publishDashboardActivityFromPersistedEventFacts(eventFacts).catch((error) => {
+            log({ level: 'warn', msg: 'Failed to publish dashboard activity websocket events', error })
+          })
+        },
       })
       await scanner.initialize()
 
@@ -311,6 +448,8 @@ signals.forEach((signal) => {
       }
       sseClients.clear()
     }
+
+    await stopDashboardWsServer()
 
     if (x402HttpServer) {
       await new Promise<void>((resolve) => {

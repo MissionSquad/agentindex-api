@@ -74,6 +74,22 @@ export interface AnalyticsOverview {
   }
 }
 
+export interface DashboardActivityItem {
+  chainId: number
+  eventName: string
+  agentId: string | null
+  agentName: string | null
+  agentImageUrl: string | null
+  txHash: string
+  logIndex: number
+  timestamp: number
+  summary: string
+}
+
+export type DashboardActivityStreamMessage =
+  | { type: 'connected'; timestamp: number }
+  | { type: 'activity'; item: DashboardActivityItem }
+
 /** SSE event data types */
 export type SSEEventType =
   | 'transaction'

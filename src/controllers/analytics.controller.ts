@@ -5,6 +5,7 @@ import { getEventFactClient } from '../repositories/event.repository'
 import { getAgentMetadataBatch } from '../repositories/agent-metadata.repository'
 import type { AgentMetadata } from '../types/mongo'
 import { env } from '../env'
+import { toDashboardActivityItems } from '../services/dashboard-activity.service'
 
 export function createAnalyticsRouter(): Router {
   const router = Router()
@@ -170,6 +171,8 @@ export function createAnalyticsRouter(): Router {
         }
       })
 
+      const activityFeed = await toDashboardActivityItems(activityEvents)
+
       const payload = {
         dashboardMetrics: {
           totalRegisteredAgents: overview.totalAgents,
@@ -214,23 +217,7 @@ export function createAnalyticsRouter(): Router {
           timeToFirstFeedbackDistribution: timeToFirstFeedbackRaw,
           selectedAgentFeedbackVelocity: [],
         },
-        activityFeed: activityEvents.map((evt) => {
-          const eventArgs = (evt.eventArgs ?? {}) as Record<string, unknown>
-          const candidateAgentId = eventArgs['agentId'] ?? eventArgs['tokenId']
-          const agentId = (
-            typeof candidateAgentId === 'string' || typeof candidateAgentId === 'number'
-          )
-            ? String(candidateAgentId)
-            : null
-
-          return {
-            eventName: evt.eventName,
-            agentId,
-            txHash: evt.txHash,
-            timestamp: toTimestampMs(evt.timestamp),
-            summary: buildEventSummary(evt.eventName, eventArgs),
-          }
-        }),
+        activityFeed,
       }
 
       res.json(payload)
@@ -240,27 +227,6 @@ export function createAnalyticsRouter(): Router {
   })
 
   return router
-}
-
-function toTimestampMs(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (value > 0 && value < 1_000_000_000_000) {
-      return value * 1000
-    }
-    return value
-  }
-
-  if (typeof value === 'string') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) {
-      if (parsed > 0 && parsed < 1_000_000_000_000) {
-        return parsed * 1000
-      }
-      return parsed
-    }
-  }
-
-  return 0
 }
 
 async function buildDailySeries(
@@ -417,36 +383,4 @@ async function buildTimeToFirstFeedback(
   return Object.entries(buckets)
     .filter(([, v]) => v > 0)
     .map(([label, value]) => ({ label, value }))
-}
-
-function buildEventSummary(eventName: string, eventArgs: Record<string, unknown>): string {
-  if (eventName === 'Registered') {
-    return `Registered by ${String(eventArgs['owner'] ?? 'unknown')}`
-  }
-
-  if (eventName === 'NewFeedback') {
-    return `Feedback from ${String(eventArgs['clientAddress'] ?? 'unknown')}`
-  }
-
-  if (eventName === 'ResponseAppended') {
-    return `Response by ${String(eventArgs['responder'] ?? 'unknown')}`
-  }
-
-  if (eventName === 'FeedbackRevoked') {
-    return `Feedback revoked by ${String(eventArgs['clientAddress'] ?? 'unknown')}`
-  }
-
-  if (eventName === 'Transfer') {
-    return `Transfer ${String(eventArgs['from'] ?? '')} -> ${String(eventArgs['to'] ?? '')}`
-  }
-
-  if (eventName === 'URIUpdated') {
-    return `URI updated by ${String(eventArgs['updatedBy'] ?? 'unknown')}`
-  }
-
-  if (eventName === 'MetadataSet') {
-    return `Metadata key ${String(eventArgs['metadataKey'] ?? 'unknown')}`
-  }
-
-  return 'Event observed'
 }

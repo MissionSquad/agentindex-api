@@ -4652,10 +4652,10 @@ events@^3.3.0:
   resolved "https://registry.npmjs.org/events/-/events-3.3.0.tgz#31a95ad0a924e2d2c419a813aeb2c4e878ea7400"
   integrity sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==
 
-evmdecoder@^0.0.69:
-  version "0.0.69"
-  resolved "https://registry.yarnpkg.com/evmdecoder/-/evmdecoder-0.0.69.tgz#73921b5b58053d54af225f69501cdfc4202f5e00"
-  integrity sha512-A3m6DbCVL+C5ISy5azJpXDQ6vMSmRqBnlK9QBI3wmiGCtjY0Swsw9kcArLC4kqLpy1v613wrBv+JBphkL5ou1g==
+evmdecoder@^0.0.70:
+  version "0.0.70"
+  resolved "https://registry.yarnpkg.com/evmdecoder/-/evmdecoder-0.0.70.tgz#f824c4b0aa24aa142422d27583c041334f8fd499"
+  integrity sha512-HTWPr8hR0rvHioySoUU0YKXbIL0EUT95rGdvTY/EhXPuKZ0idQrLPXquwN7aOIdM8Hg6FHb7j7wSZFHArLfnjQ==
   dependencies:
     "@splunkdlt/async-tasks" "^1.1.0"
     "@splunkdlt/cache" "^1.0.3"

@@ -24,6 +24,10 @@ export const env = {
   // Ethereum RPC
   ETH_RPC_URL: process.env.ETH_RPC_URL || '',
   ETH_WS_URL: process.env.ETH_WS_URL || '',
+  // Max time (ms) for a single JSON-RPC request to the Ethereum node before timing
+  // out. Applied to evmdecoder's HTTP transport (node-fetch request timeout AND the
+  // keep-alive agent socket timeout). Raise for slow nodes / large blocks.
+  ETH_RPC_TIMEOUT_MS: parseInt(process.env.ETH_RPC_TIMEOUT_MS || '120000', 10),
 
   // Chain
   CHAIN_ID: parseInt(process.env.CHAIN_ID || '1', 10),

@@ -42,6 +42,11 @@ export const env = {
   SCANNER_COOLDOWN_MS: parseInt(process.env.SCANNER_COOLDOWN_MS || '60000', 10),
   WS_RECONNECT_BASE_DELAY_MS: parseInt(process.env.WS_RECONNECT_BASE_DELAY_MS || '1000', 10),
   WS_RECONNECT_MAX_DELAY_MS: parseInt(process.env.WS_RECONNECT_MAX_DELAY_MS || '30000', 10),
+  // Block-sync supervisor: when catch-up crashes, wait then restart it (resuming
+  // from the persisted checkpoint) instead of giving up. Backoff grows
+  // exponentially from base up to max between restart attempts.
+  SCANNER_RESTART_BASE_DELAY_MS: parseInt(process.env.SCANNER_RESTART_BASE_DELAY_MS || '5000', 10),
+  SCANNER_RESTART_MAX_DELAY_MS: parseInt(process.env.SCANNER_RESTART_MAX_DELAY_MS || '60000', 10),
 
   // Metadata resolution
   IPFS_GATEWAY_URLS: (

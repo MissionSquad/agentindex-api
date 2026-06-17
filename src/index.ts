@@ -6,11 +6,11 @@ import { env } from './env'
 import { log } from './utils/logger'
 import { MongoPoolManager } from './utils/mongoPoolManager'
 import type { MongoConnectionParams } from './utils/mongodb'
-import { getChainConfig } from './config/chains'
+import { getChainConfig, type ChainConfig } from './config/chains'
 import { buildSearchX402Endpoints } from './config/x402-search'
 import { ScannerService } from './services/scanner.service'
 import { WsSubscriptionService } from './services/ws-subscription.service'
-import { runCatchup } from './services/catchup.service'
+import { runCatchupWithRestart } from './services/catchup.service'
 import { reResolveStaleMetadata, retryFailedResolutions } from './services/agent-metadata.service'
 import { createHealthRouter } from './controllers/health.controller'
 import { createAgentsRouter } from './controllers/agents.controller'
@@ -93,6 +93,7 @@ if (x402App) {
 // --- State ---
 let scanner: ScannerService | null = null
 let wsService: WsSubscriptionService | null = null
+let scannerStopping = false
 let httpServer: ReturnType<typeof app.listen> | null = null
 let x402HttpServer: ReturnType<typeof app.listen> | null = null
 let reResolveTimer: ReturnType<typeof setInterval> | null = null
@@ -291,6 +292,78 @@ async function stopDashboardWsServer(): Promise<void> {
   })
 }
 
+// --- Scanner sync supervisor ---
+// Drives catch-up sync and, once caught up, the real-time WebSocket subscriptions.
+// Catch-up can crash mid-sync (e.g. a sustained RPC outage that exhausts the
+// per-request retries). Because progress is checkpointed per block, we wait and
+// restart from the persisted block instead of giving up — block sync keeps
+// retrying rather than stopping for good. The WS path self-heals on its own
+// (reconnect + RPC cooldown), so it is started once after catch-up succeeds.
+async function startScannerSyncWithRestart(
+  scannerService: ScannerService,
+  chainConfig: ChainConfig,
+): Promise<void> {
+  const latestBlock = await runCatchupWithRestart(
+    scannerService,
+    chainConfig.chainId,
+    env.CATCHUP_BATCH_SIZE,
+    {
+      baseDelayMs: env.SCANNER_RESTART_BASE_DELAY_MS,
+      maxDelayMs: env.SCANNER_RESTART_MAX_DELAY_MS,
+      shouldStop: () => scannerStopping,
+    },
+  )
+
+  // latestBlock is null only when shutdown interrupted catch-up before it completed.
+  if (scannerStopping || latestBlock === null) return
+
+  // Real-time subscriptions for ongoing blocks/logs.
+  wsService = new WsSubscriptionService({
+    wsUrl: chainConfig.wsUrl,
+    chainId: chainConfig.chainId,
+    scanner: scannerService,
+    baseDelayMs: env.WS_RECONNECT_BASE_DELAY_MS,
+    maxDelayMs: env.WS_RECONNECT_MAX_DELAY_MS,
+    failureWindowMs: env.SCANNER_FAILURE_WINDOW_MS,
+    cooldownMs: env.SCANNER_COOLDOWN_MS,
+    onEvent: (type, data) => {
+      broadcastSSE(type, data)
+    },
+  })
+  await wsService.start()
+  log({ level: 'info', msg: 'WebSocket subscription service started' })
+
+  reResolveTimer = setInterval(async () => {
+    try {
+      const count = await reResolveStaleMetadata(
+        chainConfig.chainId,
+        env.METADATA_RE_RESOLVE_MAX_AGE_MS,
+        env.METADATA_RE_RESOLVE_BATCH_SIZE,
+      )
+      if (count > 0) {
+        log({ level: 'info', msg: `Re-resolved ${count} stale agent metadata entries` })
+      }
+    } catch (error) {
+      log({ level: 'error', msg: 'Periodic metadata re-resolution failed', error })
+    }
+  }, env.METADATA_RE_RESOLVE_INTERVAL_MS)
+
+  retryTimer = setInterval(async () => {
+    try {
+      const count = await retryFailedResolutions(
+        chainConfig.chainId,
+        env.METADATA_RETRY_MAX_AGE_MS,
+        env.METADATA_RETRY_BATCH_SIZE,
+      )
+      if (count > 0) {
+        log({ level: 'info', msg: `Retried ${count} failed metadata resolutions` })
+      }
+    } catch (error) {
+      log({ level: 'error', msg: 'Failed metadata retry job error', error })
+    }
+  }, env.METADATA_RETRY_INTERVAL_MS)
+}
+
 // --- Startup ---
 async function startServer(): Promise<void> {
   // 1. Initialize MongoDB
@@ -364,56 +437,12 @@ async function startServer(): Promise<void> {
         chainId: chainConfig.chainId,
       }))
 
-      // 5. Run catch-up from last synced block to latest
-      log({ level: 'info', msg: 'Starting catch-up sync...' })
-      const latestBlock = await runCatchup(scanner, chainConfig.chainId, env.CATCHUP_BATCH_SIZE)
-      log({ level: 'info', msg: `Catch-up complete. Latest block: ${latestBlock}` })
-
-      // 6. Start WebSocket subscriptions for real-time events
-      wsService = new WsSubscriptionService({
-        wsUrl: chainConfig.wsUrl,
-        chainId: chainConfig.chainId,
-        scanner,
-        baseDelayMs: env.WS_RECONNECT_BASE_DELAY_MS,
-        maxDelayMs: env.WS_RECONNECT_MAX_DELAY_MS,
-        failureWindowMs: env.SCANNER_FAILURE_WINDOW_MS,
-        cooldownMs: env.SCANNER_COOLDOWN_MS,
-        onEvent: (type, data) => {
-          broadcastSSE(type, data)
-        },
+      // 5. Run catch-up + real-time sync in the background, restarting on crash.
+      //    Detached so a long-running (or repeatedly retrying) catch-up never
+      //    blocks startup — the API is already serving above.
+      void startScannerSyncWithRestart(scanner, chainConfig).catch((error) => {
+        log({ level: 'error', msg: 'Scanner sync supervisor exited unexpectedly', error })
       })
-      await wsService.start()
-      log({ level: 'info', msg: 'WebSocket subscription service started' })
-
-      reResolveTimer = setInterval(async () => {
-        try {
-          const count = await reResolveStaleMetadata(
-            chainConfig.chainId,
-            env.METADATA_RE_RESOLVE_MAX_AGE_MS,
-            env.METADATA_RE_RESOLVE_BATCH_SIZE,
-          )
-          if (count > 0) {
-            log({ level: 'info', msg: `Re-resolved ${count} stale agent metadata entries` })
-          }
-        } catch (error) {
-          log({ level: 'error', msg: 'Periodic metadata re-resolution failed', error })
-        }
-      }, env.METADATA_RE_RESOLVE_INTERVAL_MS)
-
-      retryTimer = setInterval(async () => {
-        try {
-          const count = await retryFailedResolutions(
-            chainConfig.chainId,
-            env.METADATA_RETRY_MAX_AGE_MS,
-            env.METADATA_RETRY_BATCH_SIZE,
-          )
-          if (count > 0) {
-            log({ level: 'info', msg: `Retried ${count} failed metadata resolutions` })
-          }
-        } catch (error) {
-          log({ level: 'error', msg: 'Failed metadata retry job error', error })
-        }
-      }, env.METADATA_RETRY_INTERVAL_MS)
     } catch (error) {
       log({ level: 'error', msg: 'Scanner initialization failed', error })
       log({ level: 'warn', msg: 'API will run without scanner. Existing data remains queryable.' })
@@ -428,6 +457,9 @@ const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGQUIT']
 signals.forEach((signal) => {
   process.on(signal, async () => {
     log({ level: 'info', msg: `Received ${signal}. Starting graceful shutdown...` })
+
+    // Stop the catch-up restart loop from scheduling further attempts.
+    scannerStopping = true
 
     if (wsService) {
       wsService.stop()

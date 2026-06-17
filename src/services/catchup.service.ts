@@ -1,5 +1,6 @@
 import { log } from '../utils/logger'
 import { env } from '../env'
+import { sleep } from '../utils/retry'
 import { getChainSyncState } from '../repositories/chain-state.repository'
 import type { ScannerService } from './scanner.service'
 
@@ -47,6 +48,54 @@ export async function runCatchup(
 
   log({ level: 'info', msg: `Catch-up complete: ${processed} blocks processed` })
   return latestBlock
+}
+
+export interface CatchupRestartOptions {
+  /** Initial delay before the first restart attempt. */
+  baseDelayMs: number
+  /** Maximum delay between restart attempts (exponential backoff ceiling). */
+  maxDelayMs: number
+  /** Returns true when sync should stop scheduling further restarts (e.g. shutdown). */
+  shouldStop?: () => boolean
+}
+
+/**
+ * Run catch-up, automatically restarting it after a crash with exponential
+ * backoff. Catch-up progress is checkpointed per block, so each restart resumes
+ * from the last synced block — no work is lost or repeated. Without this, a
+ * single failed block would abort sync permanently.
+ *
+ * Resolves with the latest block reached once catch-up completes, or null if it
+ * stopped (via shouldStop) before completing.
+ */
+export async function runCatchupWithRestart(
+  scanner: ScannerService,
+  chainId: number,
+  batchSize: number,
+  options: CatchupRestartOptions,
+): Promise<number | null> {
+  const shouldStop = options.shouldStop ?? (() => false)
+  let restartDelayMs = options.baseDelayMs
+
+  while (!shouldStop()) {
+    try {
+      log({ level: 'info', msg: 'Starting catch-up sync...' })
+      const latestBlock = await runCatchup(scanner, chainId, batchSize)
+      log({ level: 'info', msg: `Catch-up complete. Latest block: ${latestBlock}` })
+      return latestBlock
+    } catch (error) {
+      if (shouldStop()) return null
+      log({
+        level: 'error',
+        msg: `Catch-up sync crashed; restarting in ${restartDelayMs}ms (resumes from last synced block)`,
+        error,
+      })
+      await sleep(restartDelayMs)
+      restartDelayMs = Math.min(restartDelayMs * 2, options.maxDelayMs)
+    }
+  }
+
+  return null
 }
 
 /**

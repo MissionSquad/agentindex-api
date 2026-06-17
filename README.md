@@ -382,6 +382,8 @@ Copy `.env.example` to `.env` and configure:
 | `SCANNER_TX_CONCURRENCY` | `8` | Concurrent transaction processing limit |
 | `WS_RECONNECT_BASE_DELAY_MS` | `1000` | WebSocket reconnect backoff base |
 | `WS_RECONNECT_MAX_DELAY_MS` | `30000` | WebSocket reconnect backoff ceiling |
+| `SCANNER_RESTART_BASE_DELAY_MS` | `5000` | Backoff base before restarting catch-up after a crash |
+| `SCANNER_RESTART_MAX_DELAY_MS` | `60000` | Backoff ceiling between catch-up restart attempts |
 | `IPFS_GATEWAY_URLS` | `https://ipfs.io/ipfs/|https://cloudflare-ipfs.com/ipfs/|https://dweb.link/ipfs/` | Ordered IPFS gateway list for metadata resolution |
 | `METADATA_HTTP_TIMEOUT_MS` | `10000` | HTTP metadata fetch timeout |
 | `METADATA_IPFS_TIMEOUT_MS` | `30000` | IPFS gateway fetch timeout per attempt |

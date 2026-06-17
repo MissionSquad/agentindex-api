@@ -337,6 +337,7 @@ async function startServer(): Promise<void> {
         rpcUrl: chainConfig.rpcUrl,
         abiDirectory: env.ABI_DIRECTORY,
         txConcurrency: env.SCANNER_TX_CONCURRENCY,
+        rpcTimeoutMs: env.ETH_RPC_TIMEOUT_MS,
         onEventFactsPersisted: (eventFacts) => {
           void publishDashboardActivityFromPersistedEventFacts(eventFacts).catch((error) => {
             log({ level: 'warn', msg: 'Failed to publish dashboard activity websocket events', error })

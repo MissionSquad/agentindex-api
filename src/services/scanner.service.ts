@@ -29,6 +29,7 @@ interface ScannerOptions {
   rpcUrl: string
   abiDirectory?: string
   txConcurrency?: number
+  rpcTimeoutMs?: number
   onEventFactsPersisted?: (eventFacts: EventFact[]) => void
 }
 
@@ -49,6 +50,7 @@ export class ScannerService {
   private readonly rpcUrl: string
   private readonly abiDirectory: string | undefined
   private readonly txConcurrency: number
+  private readonly rpcTimeoutMs: number
   private readonly onEventFactsPersisted?: (eventFacts: EventFact[]) => void
   private readonly inFlightTx = new Map<string, Promise<void>>()
 
@@ -58,6 +60,7 @@ export class ScannerService {
     this.rpcUrl = opts.rpcUrl
     this.abiDirectory = opts.abiDirectory
     this.txConcurrency = Math.max(1, opts.txConcurrency ?? 8)
+    this.rpcTimeoutMs = Math.max(1000, opts.rpcTimeoutMs ?? 120_000)
     this.onEventFactsPersisted = opts.onEventFactsPersisted
   }
 
@@ -65,6 +68,11 @@ export class ScannerService {
     const config: DeepPartial<Config> = {
       eth: {
         url: this.rpcUrl,
+        http: {
+          // Configurable RPC request timeout. evmdecoder >= 0.0.70 propagates this to
+          // both the node-fetch request timeout and the keep-alive agent socket timeout.
+          timeout: this.rpcTimeoutMs,
+        },
       },
       abi: {
         decodeAnonymous: true,

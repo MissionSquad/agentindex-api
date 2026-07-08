@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/agentindex-api",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "AgentIndex blockchain scanner API",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -30,7 +30,7 @@
     "@missionsquad/x402-proxy": "^0.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "evmdecoder": "^0.0.70",
+    "evmdecoder": "^0.0.71",
     "express": "^4.21.2",
     "mongodb": "^6.12.0",
     "ws": "^8.18.0"

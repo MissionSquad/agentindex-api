@@ -13,6 +13,7 @@ import { WsSubscriptionService } from './services/ws-subscription.service'
 import { runCatchupWithRestart } from './services/catchup.service'
 import { reResolveStaleMetadata, retryFailedResolutions } from './services/agent-metadata.service'
 import { createHealthRouter } from './controllers/health.controller'
+import type { CachedLatestBlock } from './controllers/health.controller'
 import { createAgentsRouter } from './controllers/agents.controller'
 import { createReputationRouter } from './controllers/reputation.controller'
 import { createAddressesRouter } from './controllers/addresses.controller'
@@ -98,6 +99,9 @@ let httpServer: ReturnType<typeof app.listen> | null = null
 let x402HttpServer: ReturnType<typeof app.listen> | null = null
 let reResolveTimer: ReturnType<typeof setInterval> | null = null
 let retryTimer: ReturnType<typeof setInterval> | null = null
+let rpcHeartbeatTimer: ReturnType<typeof setInterval> | null = null
+let rpcHeartbeatInFlight = false
+let latestBlockCache: CachedLatestBlock | null = null
 const sseClients: Set<Response> = new Set()
 let dashboardWsServer: WebSocketServer | null = null
 let dashboardWsHeartbeatTimer: ReturnType<typeof setInterval> | null = null
@@ -143,7 +147,7 @@ if (x402App) {
 }
 
 // --- API Routes ---
-app.use('/v1/health', createHealthRouter(scanner))
+app.use('/v1/health', createHealthRouter(null))
 app.use('/v1/agents', createAgentsRouter())
 app.use('/v1/reputation', createReputationRouter())
 app.use('/v1/address', createAddressesRouter())
@@ -411,6 +415,7 @@ async function startServer(): Promise<void> {
         abiDirectory: env.ABI_DIRECTORY,
         txConcurrency: env.SCANNER_TX_CONCURRENCY,
         rpcTimeoutMs: env.ETH_RPC_TIMEOUT_MS,
+        freeSocketTimeoutMs: env.ETH_RPC_FREE_SOCKET_TIMEOUT_MS,
         onEventFactsPersisted: (eventFacts) => {
           void publishDashboardActivityFromPersistedEventFacts(eventFacts).catch((error) => {
             log({ level: 'warn', msg: 'Failed to publish dashboard activity websocket events', error })
@@ -419,13 +424,35 @@ async function startServer(): Promise<void> {
       })
       await scanner.initialize()
 
-      // Re-register health router with initialized scanner
-      // (The initial registration used null scanner)
+      // Re-register health router with the latest-block cache accessor
+      // (The initial registration had no cache to read from)
       app._router.stack = app._router.stack.filter(
         (layer: { route?: { path?: string } }) =>
           !layer.route || !layer.route.path?.startsWith('/v1/health'),
       )
-      app.use('/v1/health', createHealthRouter(scanner))
+      app.use('/v1/health', createHealthRouter(() => latestBlockCache))
+
+      // RPC heartbeat: refreshes the latest-block cache and, by polling more
+      // often than the keep-alive idle timeouts, keeps one warm persistent
+      // connection to the RPC node. New-connection churn is what trips stateful
+      // middleboxes between this container and the node, so the connection must
+      // never sit idle long enough to be torn down.
+      const runRpcHeartbeat = async (): Promise<void> => {
+        if (rpcHeartbeatInFlight) return
+        rpcHeartbeatInFlight = true
+        try {
+          const value = await scanner!.getLatestBlockNumber()
+          latestBlockCache = { value, at: Date.now() }
+        } catch (error) {
+          log({ level: 'warn', msg: 'RPC heartbeat failed to fetch latest block', error })
+        } finally {
+          rpcHeartbeatInFlight = false
+        }
+      }
+      void runRpcHeartbeat()
+      rpcHeartbeatTimer = setInterval(() => {
+        void runRpcHeartbeat()
+      }, env.ETH_RPC_HEARTBEAT_INTERVAL_MS)
 
       // Re-register transactions router with decoder access for real-time decode
       app._router.stack = app._router.stack.filter(
@@ -474,6 +501,11 @@ signals.forEach((signal) => {
     if (retryTimer !== null) {
       clearInterval(retryTimer)
       retryTimer = null
+    }
+
+    if (rpcHeartbeatTimer !== null) {
+      clearInterval(rpcHeartbeatTimer)
+      rpcHeartbeatTimer = null
     }
 
     if (sseClients.size > 0) {

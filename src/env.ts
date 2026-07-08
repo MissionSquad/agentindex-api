@@ -28,6 +28,16 @@ export const env = {
   // out. Applied to evmdecoder's HTTP transport (node-fetch request timeout AND the
   // keep-alive agent socket timeout). Raise for slow nodes / large blocks.
   ETH_RPC_TIMEOUT_MS: parseInt(process.env.ETH_RPC_TIMEOUT_MS || '120000', 10),
+  // How long (ms) idle keep-alive sockets to the RPC node stay open. Long values
+  // let the scanner reuse one persistent connection between request bursts instead
+  // of dialing a new TCP connection each time — new-connection churn adds latency
+  // and can trip stateful middleboxes (NAT/firewall/IDS) on the path to the node.
+  // Requires evmdecoder >= 0.0.71.
+  ETH_RPC_FREE_SOCKET_TIMEOUT_MS: parseInt(process.env.ETH_RPC_FREE_SOCKET_TIMEOUT_MS || '300000', 10),
+  // Interval (ms) of the RPC heartbeat that refreshes the cached latest block
+  // number (served by /v1/health) and keeps the keep-alive connection warm.
+  // Must be shorter than ETH_RPC_FREE_SOCKET_TIMEOUT_MS.
+  ETH_RPC_HEARTBEAT_INTERVAL_MS: parseInt(process.env.ETH_RPC_HEARTBEAT_INTERVAL_MS || '15000', 10),
 
   // Chain
   CHAIN_ID: parseInt(process.env.CHAIN_ID || '1', 10),

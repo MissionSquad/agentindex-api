@@ -1,25 +1,28 @@
 import { Router, Request, Response } from 'express'
 import { getChainSyncState } from '../repositories/chain-state.repository'
-import type { ScannerService } from '../services/scanner.service'
 import type { HealthResponse } from '../types/api'
 import { env } from '../env'
 
-export function createHealthRouter(scanner: ScannerService | null): Router {
+export interface CachedLatestBlock {
+  value: number
+  /** Epoch ms when the RPC heartbeat last refreshed the value. */
+  at: number
+}
+
+export function createHealthRouter(
+  getCachedLatestBlock: (() => CachedLatestBlock | null) | null,
+): Router {
   const router = Router()
 
   router.get('/', async (_req: Request, res: Response) => {
     try {
       const chainId = env.CHAIN_ID
       const syncState = await getChainSyncState(chainId)
-      let latestBlock: number | null = null
 
-      try {
-        if (scanner) {
-          latestBlock = await scanner.getLatestBlockNumber()
-        }
-      } catch {
-        // Scanner may not be initialized
-      }
+      // Served from the scanner's RPC heartbeat cache. Health probes must never
+      // issue live RPC calls: during an RPC outage every probe would stall for
+      // the full request timeout and pile more requests onto the failing node.
+      const latestBlock = getCachedLatestBlock?.()?.value ?? null
 
       const lastSynced = syncState?.lastSyncedBlock ?? null
       const syncLag = latestBlock !== null && lastSynced !== null

@@ -195,9 +195,7 @@ describe('Health Controller', () => {
   beforeEach(() => resetMocks())
 
   it('GET / returns health status', async () => {
-    const router = createHealthRouter({
-      getLatestBlockNumber: vi.fn().mockResolvedValue(105),
-    } as any)
+    const router = createHealthRouter(() => ({ value: 105, at: Date.now() }))
 
     const res = await invokeRoute(router, 'get', '/')
     const body = res.body as Record<string, unknown>

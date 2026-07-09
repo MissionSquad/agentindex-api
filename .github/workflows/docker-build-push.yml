@@ -70,7 +70,10 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          # arm64 temporarily disabled: it builds under QEMU emulation, which is slow
+          # and flaky for the heavy dependency tree. Re-enable by restoring:
+          #   platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ github.event.repository.name }}-docker

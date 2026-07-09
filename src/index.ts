@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { createX402ProxySdk } from '@missionsquad/x402-proxy'
+import { createPaywall, evmPaywall } from '@x402/paywall'
 import { WebSocketServer, WebSocket } from 'ws'
 import { env } from './env'
 import { log } from './utils/logger'
@@ -141,6 +142,12 @@ if (x402App) {
     },
     syncFacilitatorOnStart: env.X402_SYNC_FACILITATOR_ON_START,
     endpoints: buildSearchX402Endpoints(env.X402_UPSTREAM_ORIGIN),
+    // Full wallet-connect payment UI for browsers hitting protected endpoints
+    // (connect wallet, pay in USDC, auto-retry with the payment header). Without
+    // a provider, @x402/core serves its bare "Payment Required" fallback page.
+    // testnet mode is derived from defaultNetwork by x402-proxy.
+    paywall: createPaywall().withNetwork(evmPaywall).build(),
+    paywallConfig: { appName: 'AgentIndex' },
   })
 
   x402.install(x402App)

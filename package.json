@@ -1,6 +1,6 @@
 {
   "name": "@missionsquad/agentindex-api",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "AgentIndex blockchain scanner API",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -27,7 +27,8 @@
   },
   "dependencies": {
     "@helia/verified-fetch": "^7.0.0",
-    "@missionsquad/x402-proxy": "^0.1.0",
+    "@missionsquad/x402-proxy": "^0.1.1",
+    "@x402/paywall": "2.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "evmdecoder": "^0.0.71",

@@ -10,14 +10,20 @@ ENV YARN_CACHE_FOLDER=/usr/local/share/.cache/yarn/$TARGETARCH
 COPY package.json yarn.lock ./
 COPY .npmrc* ./
 
+# --network-timeout: the arm64 leg builds under QEMU emulation where TLS/IO are
+# slow enough that large tarballs (viem, @x402/paywall's wallet deps) blow past
+# yarn's 30s default and fail with ESOCKETTIMEDOUT.
 RUN --mount=type=cache,target=/usr/local/share/.cache/yarn/$TARGETARCH,sharing=locked \
-    corepack enable && yarn install --frozen-lockfile
+    corepack enable && yarn install --frozen-lockfile --network-timeout 600000
 
 COPY . .
 RUN yarn build
 
-# Remove devDependencies — native addons for production deps are already compiled
-RUN yarn install --frozen-lockfile --production --ignore-scripts
+# Remove devDependencies — native addons for production deps are already compiled.
+# Same cache mount as the full install so this resolves from the warm cache
+# instead of re-downloading everything over the network.
+RUN --mount=type=cache,target=/usr/local/share/.cache/yarn/$TARGETARCH,sharing=locked \
+    yarn install --frozen-lockfile --production --ignore-scripts --network-timeout 600000
 
 # Production stage
 FROM node:22-slim
